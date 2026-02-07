@@ -6,7 +6,9 @@
     "start": "npx -y live-server",
     "native": "cd native && cargo build --release",
     "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg",
-    "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl"
+    "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl",
+    "game:logo": "rm -f logo.zip && cd examples/logo && zip ../../logo.zip *.wgsl",
+    "game": "npx -y npm-run-all -p game:*"
   },
   "author": "konsumer",
   "type": "module"

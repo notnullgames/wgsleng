@@ -489,9 +489,69 @@ class WGSLGameEngine {
     // Create buffers first (before pipelines so we can create explicit layouts)
     this.setupBuffers();
 
-    // Setup render pipeline first
+    // Create explicit bind group layouts
+    // Group 0: sampler (always) and textures (if present)
+    const renderGroup0Entries = [
+      // Sampler (always present since preprocessor always adds it)
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        sampler: { type: "filtering" },
+      },
+    ];
+
+    // Add texture bindings if present
+    for (let i = 0; i < this.textureFiles.length; i++) {
+      renderGroup0Entries.push({
+        binding: i + 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      });
+    }
+
+    this.renderBindGroupLayout0 = this.device.createBindGroupLayout({
+      label: "Render Bind Group Layout 0",
+      entries: renderGroup0Entries,
+    });
+
+    // Group 1: engine buffer (read-only for render shaders)
+    this.renderBindGroupLayout1 = this.device.createBindGroupLayout({
+      label: "Render Bind Group Layout 1",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: "storage" },
+        },
+      ],
+    });
+
+    // Compute bind group layout for engine buffer (read-write)
+    this.computeBindGroupLayout1 = this.device.createBindGroupLayout({
+      label: "Compute Bind Group Layout 1",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+      ],
+    });
+
+    // Create pipeline layouts
+    const renderPipelineLayout = this.device.createPipelineLayout({
+      label: "Render Pipeline Layout",
+      bindGroupLayouts: [this.renderBindGroupLayout0, this.renderBindGroupLayout1],
+    });
+
+    const computePipelineLayout = this.device.createPipelineLayout({
+      label: "Compute Pipeline Layout",
+      bindGroupLayouts: [this.renderBindGroupLayout0, this.computeBindGroupLayout1],
+    });
+
+    // Setup render pipeline with explicit layout
     this.renderPipeline = this.device.createRenderPipeline({
-      layout: "auto",
+      layout: renderPipelineLayout,
       vertex: {
         module: this.shaderModule,
         entryPoint: "vs_main",
@@ -510,9 +570,9 @@ class WGSLGameEngine {
       },
     });
 
-    // Setup compute pipeline with same bind group layouts as render pipeline
+    // Setup compute pipeline with explicit layout
     this.updatePipeline = this.device.createComputePipeline({
-      layout: "auto",
+      layout: computePipelineLayout,
       compute: {
         module: this.shaderModule,
         entryPoint: "update",
@@ -693,32 +753,31 @@ class WGSLGameEngine {
   }
 
   setupBindGroups() {
-    // Group 0: Textures and sampler (only if we have textures)
-    const group0Entries = [];
-
-    if (this.textures.length > 0) {
-      group0Entries.push({
+    // Group 0: Sampler (always) and textures (if present)
+    const group0Entries = [
+      // Sampler (always present since preprocessor always adds it)
+      {
         binding: 0,
         resource: this.sampler,
-      });
+      },
+    ];
 
-      // Add texture bindings
-      this.textures.forEach((texture, i) => {
-        group0Entries.push({
-          binding: i + 1,
-          resource: texture.createView(),
-        });
+    // Add texture bindings if present
+    this.textures.forEach((texture, i) => {
+      group0Entries.push({
+        binding: i + 1,
+        resource: texture.createView(),
       });
-    }
+    });
 
-    // Create bind groups for render pipeline
+    // Create bind groups for render pipeline using explicit layouts
     this.renderBindGroup0 = this.device.createBindGroup({
-      layout: this.renderPipeline.getBindGroupLayout(0),
+      layout: this.renderBindGroupLayout0,
       entries: group0Entries,
     });
 
     this.renderBindGroup1 = this.device.createBindGroup({
-      layout: this.renderPipeline.getBindGroupLayout(1),
+      layout: this.renderBindGroupLayout1,
       entries: [
         {
           binding: 0,
@@ -729,9 +788,9 @@ class WGSLGameEngine {
       ],
     });
 
-    // Create bind group for compute pipeline (only needs group 1)
+    // Create bind group for compute pipeline using explicit layout
     this.computeBindGroup1 = this.device.createBindGroup({
-      layout: this.updatePipeline.getBindGroupLayout(1),
+      layout: this.computeBindGroupLayout1,
       entries: [
         {
           binding: 0,
@@ -801,10 +860,11 @@ class WGSLGameEngine {
 
     this.device.queue.writeBuffer(this.engineBuffer, 0, inputData);
 
-    // Run compute shader (only needs group 1, not group 0 since it doesn't use textures)
+    // Run compute shader
     const commandEncoder = this.device.createCommandEncoder();
     const computePass = commandEncoder.beginComputePass();
     computePass.setPipeline(this.updatePipeline);
+    computePass.setBindGroup(0, this.renderBindGroup0); // Group 0 for sampler/textures (required by pipeline layout)
     computePass.setBindGroup(1, this.computeBindGroup1); // Group 1 for engine state
     computePass.dispatchWorkgroups(1);
     computePass.end();

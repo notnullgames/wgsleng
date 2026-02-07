@@ -556,10 +556,62 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(processed_code.into()),
         });
 
+        // Create explicit bind group layouts for render pipeline
+        // Group 0: sampler (always) and textures (if present)
+        let mut render_group0_entries = vec![
+            // Sampler (always present since preprocessor always adds it)
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            }
+        ];
+
+        // Add texture bindings if present
+        for i in 0..metadata.textures.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (i + 1) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+
+        let render_bind_group_layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Render Bind Group Layout 0"),
+            entries: &render_group0_entries,
+        });
+
+        // Group 1: engine buffer (writable, but only FRAGMENT visibility to avoid VERTEX_WRITABLE_STORAGE feature)
+        let render_bind_group_layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Render Bind Group Layout 1"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&render_bind_group_layout0, &render_bind_group_layout1],
+            push_constant_ranges: &[],
+        });
+
         // Create pipelines
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
-            layout: None,
+            layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
@@ -629,32 +681,31 @@ impl State {
             .collect();
 
         // Create bind groups
-        // Only create group 0 if we have textures (sampler is only needed with textures)
-        let mut group0_entries = vec![];
-
-        if !texture_views.is_empty() {
-            group0_entries.push(wgpu::BindGroupEntry {
+        // Group 0 always includes sampler (since preprocessor always adds it)
+        let mut group0_entries = vec![
+            wgpu::BindGroupEntry {
                 binding: 0,
                 resource: wgpu::BindingResource::Sampler(&sampler),
-            });
-
-            for (i, view) in texture_views.iter().enumerate() {
-                group0_entries.push(wgpu::BindGroupEntry {
-                    binding: (i + 1) as u32,
-                    resource: wgpu::BindingResource::TextureView(view),
-                });
             }
+        ];
+
+        // Add texture views if present
+        for (i, view) in texture_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (i + 1) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
         }
 
         let render_bind_group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Render Bind Group 0"),
-            layout: &render_pipeline.get_bind_group_layout(0),
+            layout: &render_bind_group_layout0,
             entries: &group0_entries,
         });
 
         let render_bind_group1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Render Bind Group 1"),
-            layout: &render_pipeline.get_bind_group_layout(1),
+            layout: &render_bind_group_layout1,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: engine_buffer.as_entire_binding(),
