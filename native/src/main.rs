@@ -193,28 +193,52 @@ impl PreprocessorState {
 
         // Calculate GameState size
         if let Some(ref gs) = game_state_struct {
-            let field_re = Regex::new(r":\s*\w+[^,;]*")?;
+            // Match field types, including arrays with angle brackets
+            let field_re = Regex::new(r":\s*(?:array<[^>]+>|[^,;\n]+)")?;
+            let array_re = Regex::new(r"array<([^,>]+),\s*(\d+)>")?;
             let mut size = 0;
-            let mut alignment = 4;
+            let mut alignment = 4; // Track the largest member alignment
 
             for cap in field_re.captures_iter(gs) {
                 let field = cap.get(0).unwrap().as_str();
-                if field.contains("vec4f") {
-                    size += 16;
-                    alignment = alignment.max(16);
-                } else if field.contains("vec3f") {
-                    size += 12;
-                    alignment = alignment.max(16);
-                } else if field.contains("vec2f") {
-                    size += 8;
-                    alignment = alignment.max(8);
-                } else if field.contains("u32") || field.contains("i32") || field.contains("f32") {
-                    size += 4;
-                    alignment = alignment.max(4);
+
+                // Check if it's an array
+                if let Some(array_cap) = array_re.captures(field) {
+                    let element_type = &array_cap[1];
+                    let count: usize = array_cap[2].parse().unwrap_or(1);
+
+                    let (element_size, element_align) = if element_type.contains("vec4f") {
+                        (16, 16)
+                    } else if element_type.contains("vec3f") {
+                        (16, 16) // vec3 aligns to 16 in arrays
+                    } else if element_type.contains("vec2f") {
+                        (8, 8)
+                    } else {
+                        (4, 4) // u32, i32, f32
+                    };
+
+                    alignment = alignment.max(element_align);
+                    size += element_size * count;
+                } else {
+                    // Regular field
+                    if field.contains("vec4f") {
+                        size += 16;
+                        alignment = alignment.max(16);
+                    } else if field.contains("vec3f") {
+                        size += 12;
+                        alignment = alignment.max(16);
+                    } else if field.contains("vec2f") {
+                        size += 8;
+                        alignment = alignment.max(8);
+                    } else if field.contains("u32") || field.contains("i32") || field.contains("f32") {
+                        size += 4;
+                        alignment = alignment.max(4);
+                    }
                 }
             }
 
-            metadata.state_size = alignment.max((size + alignment - 1) / alignment * alignment);
+            // Round up to struct's alignment (largest member)
+            metadata.state_size = ((size + alignment - 1) / alignment) * alignment;
         }
 
         // Build header (only for top-level)
@@ -481,6 +505,7 @@ impl State {
         // Calculate buffer layout matching WGSL struct
         let button_size = 12 * 4; // 48 bytes
         let float_data_size = 4 * 4; // 16 bytes
+        // State alignment depends on the largest member - vec2f has 8-byte alignment
         let state_alignment = 8;
         let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
         let audio_size = metadata.sounds.len() * 4;
@@ -494,6 +519,7 @@ impl State {
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
         };
+
 
         // Create engine buffer
         let mut init_data = vec![0u8; total_size];
@@ -603,16 +629,21 @@ impl State {
             .collect();
 
         // Create bind groups
-        let mut group0_entries = vec![wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Sampler(&sampler),
-        }];
+        // Only create group 0 if we have textures (sampler is only needed with textures)
+        let mut group0_entries = vec![];
 
-        for (i, view) in texture_views.iter().enumerate() {
+        if !texture_views.is_empty() {
             group0_entries.push(wgpu::BindGroupEntry {
-                binding: (i + 1) as u32,
-                resource: wgpu::BindingResource::TextureView(view),
+                binding: 0,
+                resource: wgpu::BindingResource::Sampler(&sampler),
             });
+
+            for (i, view) in texture_views.iter().enumerate() {
+                group0_entries.push(wgpu::BindGroupEntry {
+                    binding: (i + 1) as u32,
+                    resource: wgpu::BindingResource::TextureView(view),
+                });
+            }
         }
 
         let render_bind_group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
