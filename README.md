@@ -22,6 +22,10 @@ Open `http://localhost:8080/#examples/logo/main.wgsl` in a WebGPU-compatible bro
 
 ### Native
 
+You can find the CLI for your platform at [releases](https://github.com/notnullgames/wgsl-engine/releases).
+
+Or if you want to build it yourself (requires rust):
+
 ```bash
 npm run native
 ./native/target/release/wgsleng examples/logo/main.wgsl
@@ -30,6 +34,7 @@ npm run native
 ## Creating Games
 
 Games can be a single WGSL file or a zip archive containing:
+
 - `main.wgsl` (required)
 - Asset files (`.png`, `.ogg`, etc.)
 
@@ -42,15 +47,7 @@ See the `examples/` directory for reference implementations.
 - **bob**: Platformer with sprites and audio
 
 Build example zips:
+
 ```bash
 npm run game
 ```
-
-## Requirements
-
-- **Web**: Browser with WebGPU support (Chrome 113+, Edge 113+, etc.)
-- **Native**: Rust toolchain
-
-## License
-
-See repository for license information.
