@@ -1,6 +1,6 @@
 {
   "name": "wgsleng",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "main": "wgsleng.js",
   "scripts": {
     "start": "npx -y live-server",
