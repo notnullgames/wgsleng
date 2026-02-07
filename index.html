@@ -34,6 +34,56 @@
     <canvas id="canvas" width="800" height="600"></canvas>
 
     <script type="module">
+      // Simple shader preprocessor with #include support
+      async function preprocessShader(
+        code,
+        basePath = "",
+        visited = new Set(),
+      ) {
+        const includeRegex = /^\s*#include\s+["<]([^">]+)[">]/gm;
+        const includes = [];
+        let match;
+
+        while ((match = includeRegex.exec(code)) !== null) {
+          includes.push({
+            full: match[0],
+            path: match[1],
+            index: match.index,
+          });
+        }
+
+        // Process includes in reverse order to maintain string indices
+        for (let i = includes.length - 1; i >= 0; i--) {
+          const inc = includes[i];
+          const fullPath = basePath ? `${basePath}/${inc.path}` : inc.path;
+
+          // Prevent circular includes
+          if (visited.has(fullPath)) {
+            throw new Error(`Circular include detected: ${fullPath}`);
+          }
+
+          visited.add(fullPath);
+
+          // Load and preprocess the included file
+          const includeCode = await fetch(fullPath).then((r) => r.text());
+          const processedInclude = await preprocessShader(
+            includeCode,
+            fullPath.substring(0, fullPath.lastIndexOf("/")),
+            new Set(visited),
+          );
+
+          // Replace include statement with the file contents
+          code =
+            code.substring(0, inc.index) +
+            `// --- Begin include: ${inc.path} ---\n` +
+            processedInclude +
+            `\n// --- End include: ${inc.path} ---\n` +
+            code.substring(inc.index + inc.full.length);
+        }
+
+        return code;
+      }
+
       // Parse assets from shader
       function parseAssets(code) {
         const textureRegex = /\/\*\*\s*@asset\s+texture\s+([^\s]+)\s*\*\//g;
@@ -111,7 +161,8 @@
       });
 
       // Load shader and parse assets
-      const code = await fetch("game.wgsl").then((r) => r.text());
+      let code = await fetch("game.wgsl").then((r) => r.text());
+      code = await preprocessShader(code);
       const module = device.createShaderModule({ code });
       const assets = parseAssets(code);
 

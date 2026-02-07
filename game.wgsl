@@ -1,6 +1,8 @@
 /** @asset texture player.png */
 /** @asset sound bump.ogg */
 
+#include "input.wgsl"
+
 // Compute shader bindings (group 0)
 @group(0) @binding(0) var<uniform> input_compute: Input;
 @group(0) @binding(1) var<storage, read_write> state_compute: GameState;
@@ -11,14 +13,6 @@
 @group(0) @binding(1) var player_sampler: sampler;
 @group(1) @binding(0) var<storage, read> state_render: GameState;
 
-struct Input {
-    buttons: array<u32, 12>,
-    time: f32,
-    delta_time: f32,
-    screen_width: f32,
-    screen_height: f32,
-}
-
 struct GameState {
     player_pos: vec2f,
     player_vel: vec2f,
@@ -28,11 +22,6 @@ struct GameState {
 struct AudioTriggers {
     play_bump: u32,
 }
-
-const BTN_UP: u32 = 0u;
-const BTN_DOWN: u32 = 1u;
-const BTN_LEFT: u32 = 2u;
-const BTN_RIGHT: u32 = 3u;
 
 @compute @workgroup_size(1)
 fn update() {
