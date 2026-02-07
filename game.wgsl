@@ -1,8 +1,6 @@
 /** @asset texture player.png */
 /** @asset sound bump.ogg */
 
-#include "input.wgsl"
-
 // Compute shader bindings (group 0)
 @group(0) @binding(0) var<uniform> input_compute: Input;
 @group(0) @binding(1) var<storage, read_write> state_compute: GameState;
@@ -13,6 +11,17 @@
 @group(0) @binding(1) var player_sampler: sampler;
 @group(1) @binding(0) var<storage, read> state_render: GameState;
 
+// Input struct with proper alignment for uniforms
+struct Input {
+    buttons: vec4<u32>,      // buttons 0-3 (up, down, left, right)
+    buttons2: vec4<u32>,     // buttons 4-7 (A, B, X, Y)
+    buttons3: vec4<u32>,     // buttons 8-11 (L, R, start, select)
+    time: f32,
+    delta_time: f32,
+    screen_width: f32,
+    screen_height: f32,
+}
+
 struct GameState {
     player_pos: vec2f,
     player_vel: vec2f,
@@ -22,6 +31,11 @@ struct GameState {
 struct AudioTriggers {
     play_bump: u32,
 }
+
+const BTN_UP: u32 = 0u;
+const BTN_DOWN: u32 = 1u;
+const BTN_LEFT: u32 = 2u;
+const BTN_RIGHT: u32 = 3u;
 
 @compute @workgroup_size(1)
 fn update() {
@@ -41,13 +55,11 @@ fn update() {
                    new_pos.y < 32.0 || new_pos.y > input_compute.screen_height - 32.0;
     
     if (hit_edge && state_compute.at_edge == 0u) {
-        // Trigger bump sound when hitting edge for first time
         audio.play_bump += 1u;
     }
     
     state_compute.at_edge = select(0u, 1u, hit_edge);
     
-    // Clamp position
     new_pos.x = clamp(new_pos.x, 32.0, input_compute.screen_width - 32.0);
     new_pos.y = clamp(new_pos.y, 32.0, input_compute.screen_height - 32.0);
     

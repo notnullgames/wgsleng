@@ -12,6 +12,9 @@
         height: 100vh;
         background: #000;
       }
+      a {
+        color: inherit;
+      }
       canvas {
         max-width: 100%;
         max-height: 100vh;
@@ -29,7 +32,8 @@
   </head>
   <body>
     <div id="info">
-      Arrow keys or WASD to move<br />Hit the edges for sound!
+      Arrow keys or WASD to move<br />Hit the edges for sound!<br />You can view
+      the <a href="game.wgsl">source</a>.
     </div>
     <canvas id="canvas" width="800" height="600"></canvas>
 
@@ -285,13 +289,15 @@
           dt = Math.min(dt, 0.1); // Cap at 100ms (10fps minimum)
         }
 
-        // Create input data as Uint32 array view (12 u32 buttons + 4 f32 values)
+        // Create input data with proper alignment
         const inputData = new ArrayBuffer(64);
         const inputU32 = new Uint32Array(inputData);
         const inputF32 = new Float32Array(inputData);
 
-        // Write buttons as u32 (indices 0-11)
-        inputU32.set(buttons, 0);
+        // Write buttons as vec4<u32> (indices 0-11 mapped to 0-2 vec4s)
+        for (let i = 0; i < 12; i++) {
+          inputU32[i] = buttons[i];
+        }
 
         // Write time/delta/screen as f32 (indices 12-15)
         inputF32[12] = now / 1000;
