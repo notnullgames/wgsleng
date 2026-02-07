@@ -28,10 +28,46 @@
     </style>
   </head>
   <body>
-    <div id="info">Arrow keys or WASD to move</div>
+    <div id="info">
+      Arrow keys or WASD to move<br />Hit the edges for sound!
+    </div>
     <canvas id="canvas" width="800" height="600"></canvas>
 
     <script type="module">
+      // Parse assets from shader
+      function parseAssets(code) {
+        const textureRegex = /\/\*\*\s*@asset\s+texture\s+([^\s]+)\s*\*\//g;
+        const soundRegex = /\/\*\*\s*@asset\s+sound\s+([^\s]+)\s*\*\//g;
+
+        const textures = [];
+        const sounds = [];
+
+        let match;
+        while ((match = textureRegex.exec(code)) !== null) {
+          textures.push(match[1]);
+        }
+        while ((match = soundRegex.exec(code)) !== null) {
+          sounds.push(match[1]);
+        }
+
+        return { textures, sounds };
+      }
+
+      // Load audio file
+      async function loadSound(audioContext, url) {
+        const response = await fetch(url);
+        const arrayBuffer = await response.arrayBuffer();
+        return await audioContext.decodeAudioData(arrayBuffer);
+      }
+
+      // Play sound
+      function playSound(audioContext, buffer) {
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start();
+      }
+
       const canvas = document.getElementById("canvas");
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) {
@@ -74,13 +110,23 @@
         }
       });
 
-      // Load shader
+      // Load shader and parse assets
       const code = await fetch("game.wgsl").then((r) => r.text());
       const module = device.createShaderModule({ code });
+      const assets = parseAssets(code);
+
+      console.log("Loading assets:", assets);
+
+      // Setup Web Audio
+      const audioContext = new AudioContext();
+      const sounds = {};
+      for (const soundFile of assets.sounds) {
+        sounds[soundFile] = await loadSound(audioContext, soundFile);
+      }
 
       // Load texture
       const img = await createImageBitmap(
-        await fetch("player.png").then((r) => r.blob()),
+        await fetch(assets.textures[0]).then((r) => r.blob()),
       );
       const texture = device.createTexture({
         size: [img.width, img.height],
@@ -107,14 +153,30 @@
       });
 
       const stateBuffer = device.createBuffer({
-        size: 16,
+        size: 24,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       device.queue.writeBuffer(
         stateBuffer,
         0,
-        new Float32Array([400, 300, 0, 0]),
+        new Float32Array([400, 300, 0, 0, 0, 0]),
       );
+
+      // Create audio triggers buffer
+      const audioBuffer = device.createBuffer({
+        size: 4,
+        usage:
+          GPUBufferUsage.STORAGE |
+          GPUBufferUsage.COPY_SRC |
+          GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(audioBuffer, 0, new Uint32Array([0]));
+
+      // Create staging buffer to read audio triggers
+      const audioReadBuffer = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+      });
 
       // Pipelines with auto layout
       const computePipeline = device.createComputePipeline({
@@ -135,6 +197,7 @@
         entries: [
           { binding: 0, resource: { buffer: inputBuffer } },
           { binding: 1, resource: { buffer: stateBuffer } },
+          { binding: 2, resource: { buffer: audioBuffer } },
         ],
       });
 
@@ -153,12 +216,23 @@
       });
 
       // Render loop
-      // Render loop
       let last = performance.now();
+      let firstFrame = true;
+      let lastBumpTrigger = 0;
+      let audioReadPending = false;
+
       function frame() {
         const now = performance.now();
-        const dt = (now - last) / 1000;
+        let dt = (now - last) / 1000;
         last = now;
+
+        // Cap delta time to prevent huge jumps during lag
+        if (firstFrame) {
+          dt = 1 / 60; // Assume 60fps for first frame
+          firstFrame = false;
+        } else {
+          dt = Math.min(dt, 0.1); // Cap at 100ms (10fps minimum)
+        }
 
         // Create input data as Uint32 array view (12 u32 buttons + 4 f32 values)
         const inputData = new ArrayBuffer(64);
@@ -200,6 +274,29 @@
         render.end();
 
         device.queue.submit([encoder.finish()]);
+
+        // Check audio triggers (non-blocking)
+        if (!audioReadPending) {
+          audioReadPending = true;
+
+          const readEncoder = device.createCommandEncoder();
+          readEncoder.copyBufferToBuffer(audioBuffer, 0, audioReadBuffer, 0, 4);
+          device.queue.submit([readEncoder.finish()]);
+
+          audioReadBuffer.mapAsync(GPUMapMode.READ).then(() => {
+            const data = new Uint32Array(audioReadBuffer.getMappedRange());
+            const bumpTrigger = data[0];
+
+            if (bumpTrigger > lastBumpTrigger) {
+              playSound(audioContext, sounds["bump.ogg"]);
+              lastBumpTrigger = bumpTrigger;
+            }
+
+            audioReadBuffer.unmap();
+            audioReadPending = false;
+          });
+        }
+
         requestAnimationFrame(frame);
       }
       frame();
