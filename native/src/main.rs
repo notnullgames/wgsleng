@@ -52,41 +52,80 @@ fn parse_assets(code: &str) -> Assets {
     Assets { textures, sounds }
 }
 
-// Preprocess shader with #include support
+#[derive(Debug)]
+struct Metadata {
+    title: String,
+    textures: Vec<String>,
+    sounds: Vec<String>,
+}
+
+// Parse /** @... */ directives from shader
+fn parse_metadata(code: &str) -> Metadata {
+    let title_re = Regex::new(r#"/\*\*\s*@title\s+(.+?)\s*\*/"#).unwrap();
+    let texture_re = Regex::new(r#"/\*\*\s*@asset\s+texture\s+([^\s]+)\s*\*/"#).unwrap();
+    let sound_re = Regex::new(r#"/\*\*\s*@asset\s+sound\s+([^\s]+)\s*\*/"#).unwrap();
+
+    let title = title_re
+        .captures(code)
+        .map(|cap| cap[1].to_string())
+        .unwrap_or_else(|| "WGSL Shader Game".to_string());
+
+    let textures = texture_re
+        .captures_iter(code)
+        .map(|cap| cap[1].to_string())
+        .collect();
+
+    let sounds = sound_re
+        .captures_iter(code)
+        .map(|cap| cap[1].to_string())
+        .collect();
+
+    Metadata { title, textures, sounds }
+}
+
+// Preprocess shader with /** @include ... */ support
 fn preprocess_shader(
     code: &str,
     base_path: &Path,
     visited: &mut HashSet<String>,
 ) -> Result<String, std::io::Error> {
-    let include_re = Regex::new(r#"^\s*#include\s+["<]([^">]+)[">]"#).unwrap();
+    let include_re = Regex::new(r#"/\*\*\s*@include\s+([^\s]+)\s*\*/"#).unwrap();
     let mut result = String::new();
+    let mut last_pos = 0;
 
-    for line in code.lines() {
-        if let Some(cap) = include_re.captures(line) {
-            let include_path = &cap[1];
-            let full_path = base_path.join(include_path);
-            let full_path_str = full_path.to_string_lossy().to_string();
+    for cap in include_re.captures_iter(code) {
+        let match_start = cap.get(0).unwrap().start();
+        let match_end = cap.get(0).unwrap().end();
+        
+        // Add code before this match
+        result.push_str(&code[last_pos..match_start]);
+        
+        let include_path = &cap[1];
+        let full_path = base_path.join(include_path);
+        let full_path_str = full_path.to_string_lossy().to_string();
 
-            if visited.contains(&full_path_str) {
-                panic!("Circular include detected: {}", full_path_str);
-            }
-
-            visited.insert(full_path_str.clone());
-
-            let include_code = fs::read_to_string(&full_path)?;
-            let include_base = full_path.parent().unwrap_or(Path::new(""));
-
-            result.push_str(&format!("// --- Begin include: {} ---\n", include_path));
-            result.push_str(&preprocess_shader(&include_code, include_base, visited)?);
-            result.push_str(&format!("\n// --- End include: {} ---\n", include_path));
-        } else {
-            result.push_str(line);
-            result.push('\n');
+        if visited.contains(&full_path_str) {
+            panic!("Circular include detected: {}", full_path_str);
         }
+
+        visited.insert(full_path_str.clone());
+
+        let include_code = fs::read_to_string(&full_path)?;
+        let include_base = full_path.parent().unwrap_or(Path::new(""));
+
+        result.push_str(&format!("// --- Begin include: {} ---\n", include_path));
+        result.push_str(&preprocess_shader(&include_code, include_base, visited)?);
+        result.push_str(&format!("\n// --- End include: {} ---\n", include_path));
+        
+        last_pos = match_end;
     }
+    
+    // Add remaining code
+    result.push_str(&code[last_pos..]);
 
     Ok(result)
 }
+
 
 struct State {
     window: Arc<Window>,
@@ -173,21 +212,22 @@ impl State {
         let processed_code = preprocess_shader(&shader_code, Path::new("."), &mut visited)
             .expect("Failed to preprocess shader");
 
-        let assets = parse_assets(&processed_code);
-        println!("Loading assets: {:?}", assets);
+        let metadata = parse_metadata(&processed_code);
+        println!("Loading: {:?}", metadata);
 
         // Load audio
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let mut sound_buffers = Vec::new();
-        for sound_file in &assets.sounds {
+        for sound_file in &metadata.sounds {
             let data = fs::read(sound_file).expect(&format!("Failed to load {}", sound_file));
             sound_buffers.push(data);
         }
 
         // Load texture
-        let img = image::open(&assets.textures[0])
+        let img = image::open(&metadata.textures[0])
             .expect("Failed to load texture")
             .to_rgba8();
+
         let dimensions = img.dimensions();
 
         let texture_size = wgpu::Extent3d {
@@ -542,16 +582,24 @@ impl State {
 
 struct App {
     state: Option<State>,
+    title: String,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
+            // Load shader to get title before creating window
+            let shader_code = fs::read_to_string("game.wgsl").expect("Failed to read game.wgsl");
+            let mut visited = HashSet::new();
+            let processed_code = preprocess_shader(&shader_code, Path::new("."), &mut visited)
+                .expect("Failed to preprocess shader");
+            let metadata = parse_metadata(&processed_code);
+            
             let window = Arc::new(
                 event_loop
                     .create_window(
                         winit::window::Window::default_attributes()
-                            .with_title("WGSL Shader Game")
+                            .with_title(&metadata.title)
                             .with_inner_size(winit::dpi::PhysicalSize::new(800, 600)),
                     )
                     .unwrap(),
@@ -591,6 +639,6 @@ impl ApplicationHandler for App {
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new().unwrap();
-    let mut app = App { state: None };
+    let mut app = App { state: None, title: String::new() };
     event_loop.run_app(&mut app).unwrap();
 }

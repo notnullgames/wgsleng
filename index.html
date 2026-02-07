@@ -38,13 +38,36 @@
     <canvas id="canvas" width="800" height="600"></canvas>
 
     <script type="module">
-      // Simple shader preprocessor with #include support
+      // Parse all metadata from shader
+      function parseMetadata(code) {
+        const titleRegex = /\/\*\*\s*@title\s+(.+?)\s*\*\//;
+        const textureRegex = /\/\*\*\s*@asset\s+texture\s+([^\s]+)\s*\*\//g;
+        const soundRegex = /\/\*\*\s*@asset\s+sound\s+([^\s]+)\s*\*\//g;
+
+        const titleMatch = titleRegex.exec(code);
+        const title = titleMatch ? titleMatch[1] : "WGSL Shader Game";
+
+        const textures = [];
+        const sounds = [];
+
+        let match;
+        while ((match = textureRegex.exec(code)) !== null) {
+          textures.push(match[1]);
+        }
+        while ((match = soundRegex.exec(code)) !== null) {
+          sounds.push(match[1]);
+        }
+
+        return { title, textures, sounds };
+      }
+
+      // Simple shader preprocessor with /** @include ... */ support
       async function preprocessShader(
         code,
         basePath = "",
         visited = new Set(),
       ) {
-        const includeRegex = /^\s*#include\s+["<]([^">]+)[">]/gm;
+        const includeRegex = /\/\*\*\s*@include\s+([^\s]+)\s*\*\//g;
         const includes = [];
         let match;
 
@@ -164,9 +187,16 @@
         }
       });
 
-      // Load shader and parse assets
+      // Load shader and parse metadata
       let code = await fetch("game.wgsl").then((r) => r.text());
       code = await preprocessShader(code);
+      const metadata = parseMetadata(code);
+
+      // Set window title
+      document.title = metadata.title;
+
+      console.log("Loading:", metadata);
+
       const module = device.createShaderModule({ code });
       const assets = parseAssets(code);
 
