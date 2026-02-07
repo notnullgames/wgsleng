@@ -1,6 +1,6 @@
 {
   "name": "wgsleng",
-  "version": "0.0.1",
+  "version": "0.0.0",
   "private": true,
   "scripts": {
     "start": "npx -y live-server",

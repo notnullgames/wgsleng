@@ -1,0 +1,56 @@
+# WGSL Game Engine
+
+A minimal game engine that runs games written entirely in WGSL (WebGPU Shading Language). Games are distributed as a single `.wgsl` file or a `.zip` containing `main.wgsl` and assets.
+
+## Features
+
+- **Single-file games**: Write your entire game in WGSL
+- **Web runtime**: Run games in any WebGPU-capable browser
+- **Native runtime**: Standalone Rust-based player for desktop
+- **Simple input**: Supports arrow keys/WASD for movement, Z/X (or K/L) for A/B buttons
+- **Asset support**: Include images and audio in zip format
+
+## Quick Start
+
+### Web
+
+```bash
+npm start
+```
+
+Open `http://localhost:8080/#examples/logo/main.wgsl` in a WebGPU-compatible browser.
+
+### Native
+
+```bash
+npm run native
+./native/target/release/wgsleng examples/logo/main.wgsl
+```
+
+## Creating Games
+
+Games can be a single WGSL file or a zip archive containing:
+- `main.wgsl` (required)
+- Asset files (`.png`, `.ogg`, etc.)
+
+See the `examples/` directory for reference implementations.
+
+## Examples
+
+- **logo**: Spinning demo logo
+- **snake**: Classic snake game
+- **bob**: Platformer with sprites and audio
+
+Build example zips:
+```bash
+npm run game
+```
+
+## Requirements
+
+- **Web**: Browser with WebGPU support (Chrome 113+, Edge 113+, etc.)
+- **Native**: Rust toolchain
+
+## License
+
+See repository for license information.
