@@ -1,0 +1,10 @@
+{
+  "name": "wgsl-game",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "start": "npx -y live-server"
+  },
+  "author": "konsumer",
+  "type": "module"
+}
