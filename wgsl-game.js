@@ -1,9 +1,8 @@
-// wgsl-game.js
 import JSZip from "jszip";
 
 class GameSource {
   constructor(files, baseUrl = "") {
-    this.files = files; // Map of filename -> Uint8Array
+    this.files = files;
     this.baseUrl = baseUrl;
   }
 
@@ -27,13 +26,11 @@ class GameSource {
 
   async readFile(path) {
     if (this.files.size > 0) {
-      // Zip mode
       if (!this.files.has(path)) {
         throw new Error(`File not found in zip: ${path}`);
       }
       return this.files.get(path);
     } else {
-      // URL mode
       const url = new URL(path, this.baseUrl).href;
       const response = await fetch(url);
       if (!response.ok) {
@@ -77,57 +74,45 @@ async function preprocessShader(
   gameSource,
   visited = new Set(),
 ) {
-  console.log(
-    `preprocessShader called with currentPath: ${currentPath}, isZip: ${gameSource.files.size > 0}`,
-  );
-
-  // More robust regex that handles newlines
-  const includeRegex = /\/\*\*\s*@include\s+([^\s*]+)\s*\*\//g;
-
-  // Log all matches found
-  const matches = [...code.matchAll(includeRegex)];
-  console.log(
-    `Found ${matches.length} includes:`,
-    matches.map((m) => m[1]),
-  );
-
+  const includeRegex = /\/\*\*\s*@include\s+([^\s]+)\s*\*\//gm;
   let result = "";
   let lastPos = 0;
 
-  for (const match of matches) {
+  for (const match of code.matchAll(includeRegex)) {
     result += code.substring(lastPos, match.index);
 
     const includePath = match[1];
 
-    // In zip mode, files are flat at root
-    const fileToRead = includePath;
+    let fullPath;
+    let fileToRead;
 
-    if (visited.has(fileToRead)) {
-      throw new Error(`Circular include: ${fileToRead}`);
+    if (gameSource.baseUrl) {
+      fullPath = new URL(includePath, new URL(currentPath, gameSource.baseUrl))
+        .href;
+      fileToRead = fullPath;
+    } else {
+      const dir = currentPath.includes("/")
+        ? currentPath.substring(0, currentPath.lastIndexOf("/"))
+        : "";
+      fullPath = dir ? `${dir}/${includePath}` : includePath;
+      fileToRead = includePath;
     }
 
-    visited.add(fileToRead);
-
-    console.log(`Reading include: ${fileToRead}`);
-
-    try {
-      const includeCode = await gameSource.readText(fileToRead);
-      console.log(
-        `Successfully read ${fileToRead}, length: ${includeCode.length}`,
-      );
-
-      result += `// --- Begin include: ${includePath} ---\n`;
-      result += await preprocessShader(
-        includeCode,
-        fileToRead,
-        gameSource,
-        visited,
-      );
-      result += `\n// --- End include: ${includePath} ---\n`;
-    } catch (e) {
-      console.error(`Failed to include ${includePath}:`, e);
-      throw e;
+    if (visited.has(fullPath)) {
+      throw new Error(`Circular include: ${fullPath}`);
     }
+
+    visited.add(fullPath);
+    const includeCode = await gameSource.readText(fileToRead);
+
+    result += `// --- Begin include: ${includePath} ---\n`;
+    result += await preprocessShader(
+      includeCode,
+      fullPath,
+      gameSource,
+      visited,
+    );
+    result += `\n// --- End include: ${includePath} ---\n`;
 
     lastPos = match.index + match[0].length;
   }
@@ -144,43 +129,40 @@ function playSound(audioContext, buffer) {
 }
 
 async function isZipFile(url) {
-  const response = await fetch(url, { method: "HEAD" });
-  const contentType = response.headers.get("content-type");
+  if (url.endsWith(".zip")) return true;
 
-  // Check if it's obviously a zip
-  if (contentType === "application/zip" || url.endsWith(".zip")) {
-    return true;
+  try {
+    const response = await fetch(url, { method: "HEAD" });
+    const contentType = response.headers.get("content-type");
+    if (contentType === "application/zip") return true;
+
+    const partialResponse = await fetch(url, {
+      headers: { Range: "bytes=0-1" },
+    });
+    const bytes = new Uint8Array(await partialResponse.arrayBuffer());
+    return bytes[0] === 0x50 && bytes[1] === 0x4b;
+  } catch {
+    return false;
   }
-
-  // Check magic bytes (PK header)
-  const partialResponse = await fetch(url, {
-    headers: { Range: "bytes=0-1" },
-  });
-  const bytes = new Uint8Array(await partialResponse.arrayBuffer());
-  return bytes[0] === 0x50 && bytes[1] === 0x4b; // "PK"
 }
 
 export default async function loadGame(url, canvas) {
-  // Detect if it's a zip file
   const isZip = await isZipFile(url);
 
   let gameSource;
   let shaderPath;
 
   if (isZip) {
-    // Load as zip
     const response = await fetch(url);
     const zipData = await response.arrayBuffer();
     gameSource = await GameSource.fromZip(zipData);
-    shaderPath = "game.wgsl";
+    shaderPath = "main.wgsl";
   } else {
-    // Load as URL
     const baseUrl = new URL(".", url).href;
     gameSource = await GameSource.fromUrl(baseUrl);
     shaderPath = url;
   }
 
-  // Setup WebGPU
   const adapter = await navigator.gpu?.requestAdapter();
   if (!adapter) {
     throw new Error("WebGPU not supported");
@@ -191,7 +173,6 @@ export default async function loadGame(url, canvas) {
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format });
 
-  // Input handling
   const buttons = new Uint32Array(12);
   const keyMap = {
     ArrowUp: 0,
@@ -227,29 +208,18 @@ export default async function loadGame(url, canvas) {
     }
   });
 
-  // Load and process shader
   const shaderCode = await gameSource.readText(shaderPath);
-  console.log("Original shader length:", shaderCode.length);
-
   const processedCode = await preprocessShader(
     shaderCode,
     shaderPath,
     gameSource,
   );
-  console.log("Processed shader length:", processedCode.length);
-  console.log(
-    "Processed shader (first 1000 chars):\n",
-    processedCode.substring(0, 1000),
-  );
-
   const metadata = parseMetadata(processedCode);
 
   document.title = metadata.title;
-  console.log("Loading game:", metadata);
 
   const module = device.createShaderModule({ code: processedCode });
 
-  // Setup Web Audio
   const audioContext = new AudioContext();
   const sounds = {};
   for (const soundFile of metadata.sounds) {
@@ -260,7 +230,6 @@ export default async function loadGame(url, canvas) {
     sounds[soundFile] = audioBuffer;
   }
 
-  // Load texture
   const imgData = await gameSource.readFile(metadata.textures[0]);
   const imgBlob = new Blob([imgData]);
   const img = await createImageBitmap(imgBlob);
@@ -283,7 +252,6 @@ export default async function loadGame(url, canvas) {
     minFilter: "linear",
   });
 
-  // Buffers
   const inputBuffer = device.createBuffer({
     size: 64,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -313,7 +281,6 @@ export default async function loadGame(url, canvas) {
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
 
-  // Pipelines
   const computePipeline = device.createComputePipeline({
     layout: "auto",
     compute: { module, entryPoint: "update" },
@@ -326,7 +293,6 @@ export default async function loadGame(url, canvas) {
     primitive: { topology: "triangle-list" },
   });
 
-  // Bind groups
   const computeBindGroup = device.createBindGroup({
     layout: computePipeline.getBindGroupLayout(0),
     entries: [
@@ -349,7 +315,6 @@ export default async function loadGame(url, canvas) {
     entries: [{ binding: 0, resource: { buffer: stateBuffer } }],
   });
 
-  // Render loop
   let last = performance.now();
   let firstFrame = true;
   let lastBumpTrigger = 0;

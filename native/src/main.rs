@@ -15,7 +15,6 @@ use winit::{
 use clap::Parser;
 use zip::ZipArchive;
 
-// Button indices matching WGSL
 const BTN_UP: usize = 0;
 const BTN_DOWN: usize = 1;
 const BTN_LEFT: usize = 2;
@@ -48,21 +47,10 @@ impl GameSource {
         let path_obj = std::path::Path::new(path);
         
         if path_obj.is_dir() {
-            println!("Loading game from directory: {}", path);
             Ok(GameSource::Directory(path_obj.to_path_buf()))
         } else if path.ends_with(".zip") {
-            println!("Loading game from zip: {}", path);
             let file = std::fs::File::open(path)?;
-            let mut archive = ZipArchive::new(file)?;
-            
-            // List files in zip for debugging
-            println!("Zip contains {} files:", archive.len());
-            for i in 0..archive.len() {
-                if let Ok(file) = archive.by_index(i) {
-                    println!("  - {}", file.name());
-                }
-            }
-            
+            let archive = ZipArchive::new(file)?;
             Ok(GameSource::Zip(archive))
         } else {
             Err("Path must be a directory or .zip file".into())
@@ -70,51 +58,39 @@ impl GameSource {
     }
     
     fn read_file(&mut self, file_path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        match self {
-            GameSource::Directory(base_path) => {
-                // Prevent directory traversal
-                let requested = std::path::Path::new(file_path);
-                if requested.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-                    return Err("Directory traversal not allowed".into());
-                }
-                
-                let full_path = base_path.join(file_path);
-                println!("Reading from directory: {}", full_path.display());
-                Ok(fs::read(full_path)?)
+    match self {
+        GameSource::Directory(base_path) => {
+            let requested = std::path::Path::new(file_path);
+            if requested.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                return Err("Directory traversal not allowed".into());
             }
-            GameSource::Zip(archive) => {
-                println!("Reading from zip: {}", file_path);
-                
-                // Try original path first
-                match archive.by_name(file_path) {
-                    Ok(mut file) => {
-                        let mut contents = Vec::new();
-                        file.read_to_end(&mut contents)?;
-                        println!("  Read {} bytes", contents.len());
-                        return Ok(contents);
-                    }
-                    Err(_) => {
-                        // Fall through to try stripped path
-                    }
+            Ok(fs::read(base_path.join(file_path))?)
+        }
+        GameSource::Zip(archive) => {
+            // Try original path first
+            match archive.by_name(file_path) {
+                Ok(mut file) => {
+                    let mut contents = Vec::new();
+                    file.read_to_end(&mut contents)?;
+                    return Ok(contents);
                 }
-                
-                // Try with leading ./ stripped
-                let stripped = file_path.strip_prefix("./").unwrap_or(file_path);
-                println!("  Trying stripped path: {}", stripped);
-                
-                match archive.by_name(stripped) {
-                    Ok(mut file) => {
-                        let mut contents = Vec::new();
-                        file.read_to_end(&mut contents)?;
-                        println!("  Read {} bytes", contents.len());
-                        Ok(contents)
-                    }
-                    Err(_) => {
-                        Err(format!("File '{}' not found in zip (also tried '{}')", file_path, stripped).into())
-                    }
+                Err(_) => {
+                    // Fall through to try stripped path
                 }
+            }
+            
+            // Try with leading ./ stripped
+            let stripped = file_path.strip_prefix("./").unwrap_or(file_path);
+            match archive.by_name(stripped) {
+                Ok(mut file) => {
+                    let mut contents = Vec::new();
+                    file.read_to_end(&mut contents)?;
+                    Ok(contents)
+                }
+                Err(_) => Err(format!("File not found: {}", file_path).into())
             }
         }
+    }
     }
 
     
@@ -131,7 +107,6 @@ struct Metadata {
     sounds: Vec<String>,
 }
 
-// Parse /** @... */ directives from shader
 fn parse_metadata(code: &str) -> Metadata {
     let title_re = Regex::new(r#"/\*\*\s*@title\s+(.+?)\s*\*/"#).unwrap();
     let texture_re = Regex::new(r#"/\*\*\s*@asset\s+texture\s+([^\s]+)\s*\*/"#).unwrap();
@@ -155,7 +130,6 @@ fn parse_metadata(code: &str) -> Metadata {
     Metadata { title, textures, sounds }
 }
 
-// Preprocess shader with /** @include ... */ support
 fn preprocess_shader(
     code: &str,
     current_path: &str,
@@ -174,8 +148,7 @@ fn preprocess_shader(
         
         let include_path = &cap[1];
         
-        // Resolve relative path
-        let full_path = if current_path.is_empty() || current_path == "game.wgsl" {
+        let full_path = if current_path.is_empty() || current_path == "main.wgsl" {
             include_path.to_string()
         } else {
             let base = std::path::Path::new(current_path)
@@ -194,7 +167,6 @@ fn preprocess_shader(
         }
 
         visited.insert(full_path.clone());
-
         let include_code = game_source.read_text(&full_path)?;
 
         result.push_str(&format!("// --- Begin include: {} ---\n", include_path));
@@ -205,7 +177,6 @@ fn preprocess_shader(
     }
     
     result.push_str(&code[last_pos..]);
-
     Ok(result)
 }
 
@@ -227,7 +198,6 @@ struct State {
     audio_read_buffer: wgpu::Buffer,
     buttons: [u32; 12],
     last_time: std::time::Instant,
-    // Audio
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
     sound_buffers: Vec<Vec<u8>>,
@@ -238,7 +208,6 @@ impl State {
     async fn new(window: Arc<Window>, game_source: &mut GameSource) -> Result<Self, Box<dyn std::error::Error>> {
         let size = window.inner_size();
 
-        // WebGPU setup
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
@@ -288,15 +257,12 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // Load and preprocess shader from game source
-        let shader_code = game_source.read_text("game.wgsl")?;
+        let shader_code = game_source.read_text("main.wgsl")?;
         let mut visited = HashSet::new();
-        let processed_code = preprocess_shader(&shader_code, "game.wgsl", game_source, &mut visited)?;
+        let processed_code = preprocess_shader(&shader_code, "main.wgsl", game_source, &mut visited)?;
 
         let metadata = parse_metadata(&processed_code);
-        println!("Loading: {:?}", metadata);
 
-        // Load audio
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let mut sound_buffers = Vec::new();
         for sound_file in &metadata.sounds {
@@ -304,7 +270,6 @@ impl State {
             sound_buffers.push(data);
         }
 
-        // Load texture
         let img_data = game_source.read_file(&metadata.textures[0])?;
         let img = image::load_from_memory(&img_data)?.to_rgba8();
         let dimensions = img.dimensions();
@@ -353,7 +318,6 @@ impl State {
             ..Default::default()
         });
 
-        // Create buffers
         let input_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Input Buffer"),
             size: 64,
@@ -389,13 +353,11 @@ impl State {
             mapped_at_creation: false,
         });
 
-        // Create shader module
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(processed_code.into()),
         });
 
-        // Create pipelines
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Compute Pipeline"),
             layout: None,
@@ -434,7 +396,6 @@ impl State {
             cache: None,
         });
 
-        // Create bind groups
         let compute_bind_group_layout = compute_pipeline.get_bind_group_layout(0);
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Compute Bind Group"),
@@ -552,13 +513,9 @@ impl State {
         let dt = dt.min(0.1);
         self.last_time = now;
 
-        // Update input buffer with proper alignment
         let mut input_data = [0u32; 16];
-        
-        // Copy buttons (12 u32s in first 12 slots)
         input_data[0..12].copy_from_slice(&self.buttons);
         
-        // Time/delta/screen as f32 in last 4 slots
         let time_data: [f32; 4] = [
             now.elapsed().as_secs_f32(),
             dt,
@@ -588,7 +545,6 @@ impl State {
                 label: Some("Render Encoder"),
             });
 
-        // Compute pass
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
@@ -599,7 +555,6 @@ impl State {
             compute_pass.dispatch_workgroups(1, 1, 1);
         }
 
-        // Render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -622,13 +577,11 @@ impl State {
             render_pass.draw(0..3, 0..1);
         }
 
-        // Copy audio buffer for reading
         encoder.copy_buffer_to_buffer(&self.audio_buffer, 0, &self.audio_read_buffer, 0, 4);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        // Check audio triggers
         let audio_slice = self.audio_read_buffer.slice(..);
         let (sender, receiver) = futures::channel::oneshot::channel();
         audio_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -668,16 +621,12 @@ impl ApplicationHandler for App {
         if self.state.is_none() {
             let game_source = self.game_source.as_mut().unwrap();
             
-            // Load shader to get title
-            println!("Loading game.wgsl...");
-            let shader_code = game_source.read_text("game.wgsl")
-                .expect("Failed to read game.wgsl - make sure game.wgsl exists in the root of your zip/directory");
+            let shader_code = game_source.read_text("main.wgsl")
+                .expect("Failed to read main.wgsl");
             let mut visited = HashSet::new();
-            let processed_code = preprocess_shader(&shader_code, "game.wgsl", game_source, &mut visited)
-                .unwrap_or_else(|e| panic!("Failed to preprocess shader: {}", e));
+            let processed_code = preprocess_shader(&shader_code, "main.wgsl", game_source, &mut visited)
+                .expect("Failed to preprocess shader");
             let metadata = parse_metadata(&processed_code);
-            
-            println!("Game title: {}", metadata.title);
             
             let window = Arc::new(
                 event_loop
@@ -689,11 +638,9 @@ impl ApplicationHandler for App {
                     .unwrap(),
             );
             
-            self.state = Some(pollster::block_on(State::new(window, game_source))
-                .unwrap_or_else(|e| panic!("Failed to initialize game: {}", e)));
+            self.state = Some(pollster::block_on(State::new(window, game_source)).unwrap());
         }
     }
-
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let Some(state) = &mut self.state {

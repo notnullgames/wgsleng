@@ -5,7 +5,7 @@
   "scripts": {
     "start": "npx -y live-server",
     "native": "cd native && cargo build --release",
-    "game": "cd game && zip ../game.zip *.wgsl *.png *.ogg"
+    "game": "rm -f game.zip && cd game && zip ../game.zip *.wgsl *.png *.ogg"
   },
   "author": "konsumer",
   "type": "module"
