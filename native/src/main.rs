@@ -895,8 +895,9 @@ impl ApplicationHandler for App {
 
             let state = pollster::block_on(State::new(window, game_source, &self.entry_file)).unwrap();
 
-            // Set window title from game metadata
+            // Set window title and size from game metadata
             state.window.set_title(&state.title);
+            let _ = state.window.request_inner_size(state.size);
 
             self.state = Some(state);
         }

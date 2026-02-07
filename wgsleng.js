@@ -184,24 +184,53 @@ class WGSLGameEngine {
     let stateSize = 0;
     let stateAlignment = 4; // Default alignment for scalars
     if (gameStateStruct) {
-      const fields = gameStateStruct.match(/:\s*\w+[^,;]*/g) || [];
+      // Match field types including arrays with angle brackets
+      const fields = gameStateStruct.match(/:\s*(?:array<[^>]+>|[^,;\n]+)/g) || [];
+      const arrayRegex = /array<([^,>]+),\s*(\d+)>/;
+
       for (const field of fields) {
-        if (field.includes("vec4f")) {
-          stateSize += 16;
-          stateAlignment = Math.max(stateAlignment, 16);
-        } else if (field.includes("vec3f")) {
-          stateSize += 12;
-          stateAlignment = Math.max(stateAlignment, 16);
-        } else if (field.includes("vec2f")) {
-          stateSize += 8;
-          stateAlignment = Math.max(stateAlignment, 8);
-        } else if (
-          field.includes("u32") ||
-          field.includes("i32") ||
-          field.includes("f32")
-        ) {
-          stateSize += 4;
-          stateAlignment = Math.max(stateAlignment, 4);
+        // Check if it's an array
+        const arrayMatch = field.match(arrayRegex);
+        if (arrayMatch) {
+          const elementType = arrayMatch[1];
+          const count = parseInt(arrayMatch[2]);
+
+          let elementSize, elementAlign;
+          if (elementType.includes("vec4f")) {
+            elementSize = 16;
+            elementAlign = 16;
+          } else if (elementType.includes("vec3f")) {
+            elementSize = 16; // vec3 aligns to 16 in arrays
+            elementAlign = 16;
+          } else if (elementType.includes("vec2f")) {
+            elementSize = 8;
+            elementAlign = 8;
+          } else { // u32, i32, f32
+            elementSize = 4;
+            elementAlign = 4;
+          }
+
+          stateAlignment = Math.max(stateAlignment, elementAlign);
+          stateSize += elementSize * count;
+        } else {
+          // Regular field
+          if (field.includes("vec4f")) {
+            stateSize += 16;
+            stateAlignment = Math.max(stateAlignment, 16);
+          } else if (field.includes("vec3f")) {
+            stateSize += 12;
+            stateAlignment = Math.max(stateAlignment, 16);
+          } else if (field.includes("vec2f")) {
+            stateSize += 8;
+            stateAlignment = Math.max(stateAlignment, 8);
+          } else if (
+            field.includes("u32") ||
+            field.includes("i32") ||
+            field.includes("f32")
+          ) {
+            stateSize += 4;
+            stateAlignment = Math.max(stateAlignment, 4);
+          }
         }
       }
       // Align to struct's alignment (largest member)
@@ -664,21 +693,23 @@ class WGSLGameEngine {
   }
 
   setupBindGroups() {
-    // Group 0: Textures and sampler
-    const group0Entries = [
-      {
+    // Group 0: Textures and sampler (only if we have textures)
+    const group0Entries = [];
+
+    if (this.textures.length > 0) {
+      group0Entries.push({
         binding: 0,
         resource: this.sampler,
-      },
-    ];
-
-    // Add texture bindings
-    this.textures.forEach((texture, i) => {
-      group0Entries.push({
-        binding: i + 1,
-        resource: texture.createView(),
       });
-    });
+
+      // Add texture bindings
+      this.textures.forEach((texture, i) => {
+        group0Entries.push({
+          binding: i + 1,
+          resource: texture.createView(),
+        });
+      });
+    }
 
     // Create bind groups for render pipeline
     this.renderBindGroup0 = this.device.createBindGroup({
