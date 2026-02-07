@@ -1,55 +1,35 @@
-/** @title Bob-Bonker */
-/** @asset texture player.png */
-/** @asset sound bump.ogg */
-/** @include input.wgsl */
+@set_title("Bob-Bonker")
+@set_size(800, 600)
 
-// Compute shader bindings (group 0)
-@group(0) @binding(0) var<uniform> input_compute: Input;
-@group(0) @binding(1) var<storage, read_write> state_compute: GameState;
-@group(0) @binding(2) var<storage, read_write> audio: AudioTriggers;
+@import("helpers.wgsl")
 
-// Render shader bindings (group 0 for textures, group 1 for state)
-@group(0) @binding(0) var player_texture: texture_2d<f32>;
-@group(0) @binding(1) var player_sampler: sampler;
-@group(1) @binding(0) var<storage, read> state_render: GameState;
-
+// Only define things that persist across frames
 struct GameState {
     player_pos: vec2f,
     player_vel: vec2f,
     at_edge: u32,
 }
 
-struct AudioTriggers {
-    play_bump: u32,
-}
-
 @compute @workgroup_size(1)
 fn update() {
     var vel = vec2f(0.0);
-    
-    if (input_compute.buttons[BTN_RIGHT] == 1u) { vel.x += 200.0; }
-    if (input_compute.buttons[BTN_LEFT] == 1u) { vel.x -= 200.0; }
-    if (input_compute.buttons[BTN_DOWN] == 1u) { vel.y += 200.0; }
-    if (input_compute.buttons[BTN_UP] == 1u) { vel.y -= 200.0; }
-    
-    state_compute.player_vel = vel;
-    
-    var new_pos = state_compute.player_pos + vel * input_compute.delta_time;
-    
-    // Check for edge collision
-    let hit_edge = new_pos.x < 32.0 || new_pos.x > input_compute.screen_width - 32.0 ||
-                   new_pos.y < 32.0 || new_pos.y > input_compute.screen_height - 32.0;
-    
-    if (hit_edge && state_compute.at_edge == 0u) {
-        audio.play_bump += 1u;
+    if (@engine.buttons[BTN_RIGHT] == 1) { vel.x += 200.0; }
+    if (@engine.buttons[BTN_LEFT] == 1) { vel.x -= 200.0; }
+    if (@engine.buttons[BTN_DOWN] == 1) { vel.y += 200.0; }
+    if (@engine.buttons[BTN_UP] == 1) { vel.y -= 200.0; }
+
+    game_state.player_vel = vel;
+    var new_pos = game_state.player_pos + vel * @engine.delta_time;
+
+    let screen_size = vec2f(@engine.screen_width, @engine.screen_height);
+    let hit_edge = is_at_edge(new_pos, 32.0, screen_size);
+
+    if (hit_edge && game_state.at_edge == 0u) {
+        @sound("bump.ogg").play();
     }
-    
-    state_compute.at_edge = select(0u, 1u, hit_edge);
-    
-    new_pos.x = clamp(new_pos.x, 32.0, input_compute.screen_width - 32.0);
-    new_pos.y = clamp(new_pos.y, 32.0, input_compute.screen_height - 32.0);
-    
-    state_compute.player_pos = new_pos;
+
+    game_state.at_edge = select(0u, 1u, hit_edge);
+    game_state.player_pos = clamp_to_screen(new_pos, 32.0, screen_size);
 }
 
 @vertex
@@ -62,14 +42,11 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 @fragment  
 fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     var color = vec4f(0.1, 0.1, 0.2, 1.0);
+    let dist = coord.xy - game_state.player_pos;
     
-    let player_pos = state_render.player_pos;
-    let dist = coord.xy - player_pos;
-    let sprite_size = 32.0;
-    
-    if (all(abs(dist) < vec2f(sprite_size))) {
-        let uv = (dist + sprite_size) / (sprite_size * 2.0);
-        let sprite = textureSampleLevel(player_texture, player_sampler, uv, 0.0);
+    if (all(abs(dist) < vec2f(32.0))) {
+        let uv = (dist + 32.0) / 64.0;
+        let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0);
         if (sprite.a > 0.1) {
             color = sprite;
         }

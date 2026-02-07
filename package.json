@@ -1,12 +1,11 @@
 {
-  "name": "wgsl-game",
+  "name": "wgsleng",
   "version": "0.0.1",
   "private": true,
   "scripts": {
     "start": "npx -y live-server",
     "native": "cd native && cargo build --release",
-    "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg",
-    "game:tetris": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg"
+    "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg"
   },
   "author": "konsumer",
   "type": "module"

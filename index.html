@@ -2,52 +2,92 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>WGSL Game</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "jszip": "https://esm.sh/jszip@3.10.1"
-        }
-      }
-    </script>
+    <title>WGSL Game Engine</title>
     <style>
       body {
         margin: 0;
+        padding: 0;
         display: flex;
         justify-content: center;
         align-items: center;
-        height: 100vh;
+        min-height: 100vh;
         background: #000;
-      }
-      canvas {
-        max-width: 100%;
-        max-height: 100vh;
+        font-family: monospace;
+        color: #fff;
       }
       a {
         color: inherit;
       }
+      #container {
+        text-align: center;
+      }
+      canvas {
+        border: 2px solid #333;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      #error {
+        color: #f66;
+        margin-top: 20px;
+        white-space: pre-wrap;
+        text-align: left;
+        max-width: 800px;
+      }
       #info {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        background: rgba(0, 0, 0, 0.7);
-        padding: 10px;
-        color: white;
-        font-family: monospace;
+        margin-top: 10px;
+        color: #999;
+        font-size: 12px;
       }
     </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "fflate": "https://esm.sh/fflate/esm/browser.js"
+        }
+      }
+    </script>
   </head>
   <body>
-    <div id="info">
-      Arrow keys or WASD to move<br />Hit the edges for sound!<br />You can view
-      <a href="examples/bob/main.wgsl">the source</a>!
+    <div id="container">
+      <div id="title">Loading...</div>
+      <canvas id="canvas"></canvas>
+      <div id="info"></div>
+      <div id="error"></div>
     </div>
-    <canvas id="canvas" width="800" height="600"></canvas>
-
     <script type="module">
-      import loadGame from "./wgsl-game.js";
+      import { createGame } from "./wgsleng.js";
+
       const canvas = document.getElementById("canvas");
-      await loadGame("bob.zip", canvas);
+      const titleEl = document.getElementById("title");
+      const infoEl = document.getElementById("info");
+      const errorEl = document.getElementById("error");
+
+      // Error handler
+      function handleError(msg) {
+        errorEl.textContent = msg;
+      }
+
+      window.addEventListener("hashchange", () => {
+        // reload is required to clear it out
+        document.location.reload();
+      });
+
+      // allow url-hash to set cart
+      const cart = document.location.hash
+        ? decodeURIComponent(document.location.hash.slice(1))
+        : "examples/bob/main.wgsl"; // you can also do zip files
+
+      // Load the game
+      createGame(cart, canvas, handleError)
+        .then((game) => {
+          // Set page title and info from game metadata
+          document.title = game.title;
+          titleEl.textContent = game.title;
+          infoEl.innerHTML = `Controls: Arrow keys or WASD to move, Z/K for A, X/L for B<br/>You can <a href="${cart}">view source</a>`;
+        })
+        .catch((err) => {
+          handleError(err.stack || err.message);
+        });
     </script>
   </body>
 </html>
