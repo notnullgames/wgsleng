@@ -40,15 +40,14 @@
   <body>
     <div id="info">
       Arrow keys or WASD to move<br />Hit the edges for sound!<br />You can view
-      <a href="game/main.wgsl">the source</a>!
+      <a href="examples/bob/main.wgsl">the source</a>!
     </div>
     <canvas id="canvas" width="800" height="600"></canvas>
 
     <script type="module">
       import loadGame from "./wgsl-game.js";
-
       const canvas = document.getElementById("canvas");
-      await loadGame("game.zip", canvas);
+      await loadGame("bob.zip", canvas);
     </script>
   </body>
 </html>
