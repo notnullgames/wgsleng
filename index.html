@@ -23,9 +23,25 @@
         max-width: 100%;
         max-height: 100vh;
       }
+      a {
+        color: inherit;
+      }
+      #info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 10px;
+        color: white;
+        font-family: monospace;
+      }
     </style>
   </head>
   <body>
+    <div id="info">
+      Arrow keys or WASD to move<br />Hit the edges for sound!<br />You can view
+      <a href="game/main.wgsl">the source</a>!
+    </div>
     <canvas id="canvas" width="800" height="600"></canvas>
 
     <script type="module">
