@@ -21,10 +21,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: wgsleng
             asset_name: wgsleng-linux-x86_64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: wgsleng
-            asset_name: wgsleng-linux-aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: wgsleng
@@ -47,24 +43,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
-        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev pkg-config
 
-      - name: Install cross for ARM64 Linux
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Build (native)
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      - name: Build
         working-directory: ./native
         run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build (cross)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        working-directory: ./native
-        run: cross build --release --target ${{ matrix.target }}
 
       - name: Prepare artifact
         run: |
