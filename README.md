@@ -42,9 +42,9 @@ See the `examples/` directory for reference implementations.
 
 ## Examples
 
-- **logo**: Spinning demo logo
-- **snake**: Classic snake game
-- **bob**: Platformer with sprites and audio
+- **bob**: Demo with sprites and audio
+- **logo**: Shows how to draw things.
+- **snake**: (INCOMPLETE) Classic snake game
 
 Build example zips:
 
