@@ -8,7 +8,7 @@ struct GameState {
 
 @compute @workgroup_size(1)
 fn update() {
-    game_state.time = @engine.time;
+    @engine.state.time = @engine.time;
 }
 
 // Use fullscreen triangle (current engine limitation)
@@ -104,7 +104,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     var color = vec3f(0.1, 0.1, 0.15);
 
     // Setup camera and projection
-    let time = game_state.time;
+    let time = @engine.state.time;
     let camera_pos = vec3f(0.0, 1.5, 3.0);
     let view_matrix = mat4_look_at(camera_pos, vec3f(0.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
     let aspect = @engine.screen_width / @engine.screen_height;

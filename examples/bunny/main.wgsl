@@ -1,4 +1,4 @@
-@set_title("Stanford Bunny - 3D Model")
+@set_title("Stanford Bunny")
 @set_size(800, 600)
 
 @model("bunny.obj")
@@ -25,8 +25,7 @@ fn update() {
         speed = 2.0;
     }
 
-    game_state.rotation = game_state.rotation + speed * @engine.delta_time;
-    // Note: We'll copy game_state.rotation to the transforms buffer on CPU side each frame
+    @engine.state.rotation = @engine.state.rotation + speed * @engine.delta_time;
 }
 
 struct VertexOutput {

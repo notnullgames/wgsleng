@@ -18,18 +18,18 @@ fn update() {
     if (@engine.buttons[BTN_DOWN] == 1) { vel.y += 200.0; }
     if (@engine.buttons[BTN_UP] == 1) { vel.y -= 200.0; }
 
-    game_state.player_vel = vel;
-    var new_pos = game_state.player_pos + vel * @engine.delta_time;
+    @engine.state.player_vel = vel;
+    var new_pos = @engine.state.player_pos + vel * @engine.delta_time;
 
     let screen_size = vec2f(@engine.screen_width, @engine.screen_height);
     let hit_edge = is_at_edge(new_pos, 32.0, screen_size);
 
-    if (hit_edge && game_state.at_edge == 0u) {
+    if (hit_edge && @engine.state.at_edge == 0u) {
         @sound("bump.ogg").play();
     }
 
-    game_state.at_edge = select(0u, 1u, hit_edge);
-    game_state.player_pos = clamp_to_screen(new_pos, 32.0, screen_size);
+    @engine.state.at_edge = select(0u, 1u, hit_edge);
+    @engine.state.player_pos = clamp_to_screen(new_pos, 32.0, screen_size);
 }
 
 @vertex
@@ -42,7 +42,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 @fragment  
 fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     var color = vec4f(0.1, 0.1, 0.2, 1.0);
-    let dist = coord.xy - game_state.player_pos;
+    let dist = coord.xy - @engine.state.player_pos;
     
     if (all(abs(dist) < vec2f(32.0))) {
         let uv = (dist + 32.0) / 64.0;

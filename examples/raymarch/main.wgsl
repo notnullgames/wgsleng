@@ -10,7 +10,7 @@ struct GameState {
 
 @compute @workgroup_size(1)
 fn update() {
-    game_state.time = @engine.time;
+    @engine.state.time = @engine.time;
 }
 
 @vertex
@@ -22,7 +22,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 
 // Scene definition - returns distance to nearest surface
 fn scene(p: vec3f) -> vec3f {
-    let time = game_state.time;
+    let time = @engine.state.time;
 
     // Ground plane at Y = 0
     let ground = sdf_plane(p, vec3f(0.0, 1.0, 0.0), 0.0);
@@ -38,7 +38,7 @@ fn scene(p: vec3f) -> vec3f {
     }
 
     // Cube on ground with animation - ensure it stays above ground
-    let cube_pos = vec3f(0.0, 0.85 + abs(sin(time * 0.5)) * 0.3, 0.0);
+    let cube_pos = vec3f(0.0, 1.0 + abs(sin(time * 0.5)) * 0.3, 0.0);
     let rotated_p = rotate_euler(p - cube_pos, vec3f(time * 0.5, time * 0.7, time * 0.3));
     let cube = sdf_box(rotated_p, vec3f(0.6, 0.6, 0.6));
     if (cube < closest_dist) {
@@ -47,7 +47,7 @@ fn scene(p: vec3f) -> vec3f {
     }
 
     // Torus on ground - raised slightly
-    let torus_pos = vec3f(3.0, 0.7, 0.0);
+    let torus_pos = vec3f(3.0, 1.0, 0.0);
     let torus_p = rotate_x(p - torus_pos, time * 0.8);
     let torus = sdf_torus(torus_p, 0.6, 0.25);
     if (torus < closest_dist) {
@@ -166,7 +166,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     let uv_correct = vec2f(uv.x * aspect, -uv.y);  // Flip Y to correct orientation
 
     // Camera setup
-    let time = game_state.time;
+    let time = @engine.state.time;
     let camera_angle = time * 0.3;
     let camera_distance = 8.0;
     let camera_pos = vec3f(

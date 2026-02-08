@@ -317,10 +317,7 @@ impl PreprocessorState {
         source = source.replace("@engine.screen_width", "_engine.screen_width");
         source = source.replace("@engine.screen_height", "_engine.screen_height");
         source = source.replace("@engine.sampler", "_engine_sampler");
-
-        // Replace game_state. with _engine.state.
-        let game_state_re = Regex::new(r"\bgame_state\.")?;
-        source = game_state_re.replace_all(&source, "_engine.state.").to_string();
+        source = source.replace("@engine.state", "_engine.state");
 
         // Replace @sound().play() and @sound().stop()
         for (i, sound) in metadata.sounds.iter().enumerate() {
