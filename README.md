@@ -34,8 +34,11 @@ You can find the CLI for your platform at [releases](https://github.com/notnullg
 
 Or if you want to build it yourself (requires rust):
 
-```bash
+```sh
+# build the native CLI for your platform
 npm run native
+
+# load logo example, can also be a zip-file
 ./native/target/release/wgsleng examples/logo/main.wgsl
 ```
 
