@@ -25,7 +25,7 @@ By default it will show bob-example, but you can switch to others:
 These all work local, and on the web:
 
 - [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
-- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things.
+- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
 - [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
 
 ### Native
