@@ -5,6 +5,9 @@ use std::io::Read;
 use regex::Regex;
 use zip::ZipArchive;
 
+pub mod obj_loader;
+pub use obj_loader::ObjModel;
+
 pub const BTN_UP: usize = 0;
 pub const BTN_DOWN: usize = 1;
 pub const BTN_LEFT: usize = 2;
@@ -81,6 +84,7 @@ pub struct Metadata {
     pub height: u32,
     pub textures: Vec<String>,
     pub sounds: Vec<String>,
+    pub models: Vec<String>,
     pub state_size: usize,
 }
 
@@ -133,6 +137,7 @@ impl PreprocessorState {
             height: 600,
             textures: Vec::new(),
             sounds: Vec::new(),
+            models: Vec::new(),
             state_size: 16,
         };
 
@@ -162,6 +167,15 @@ impl PreprocessorState {
             let texture_file = cap[1].to_string();
             if !metadata.textures.contains(&texture_file) {
                 metadata.textures.push(texture_file);
+            }
+        }
+
+        // Find all @model() references
+        let model_re = Regex::new(r#"@model\("([^"]+)"\)"#)?;
+        for cap in model_re.captures_iter(&source) {
+            let model_file = cap[1].to_string();
+            if !metadata.models.contains(&model_file) {
+                metadata.models.push(model_file);
             }
         }
 
@@ -273,7 +287,22 @@ impl PreprocessorState {
                 header.push_str(&format!("@group(0) @binding({}) var _texture_{}: texture_2d<f32>; // {}\n", i + 1, i, tex));
             }
 
-            header.push_str("\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n\n");
+            header.push_str("\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n");
+
+            // Add model buffers
+            if !metadata.models.is_empty() {
+                header.push_str("\n// Model data buffers\n");
+                for (i, model) in metadata.models.iter().enumerate() {
+                    let binding_base = 1 + i * 2;
+                    header.push_str(&format!("struct Model{}Positions {{ data: array<vec3f> }}\n", i));
+                    header.push_str(&format!("@group(2) @binding({}) var<storage, read> _model_{}_positions: Model{}Positions; // {}\n", binding_base, i, i, model));
+
+                    header.push_str(&format!("struct Model{}Normals {{ data: array<vec3f> }}\n", i));
+                    header.push_str(&format!("@group(2) @binding({}) var<storage, read> _model_{}_normals: Model{}Normals;\n", binding_base + 1, i, i));
+                }
+            }
+
+            header.push_str("\n");
 
             // Remove GameState from source
             if game_state_struct.is_some() {
@@ -312,6 +341,23 @@ impl PreprocessorState {
             let escaped = texture.replace(".", "\\.");
             let texture_re = Regex::new(&format!(r#"@texture\("{}"\)"#, escaped))?;
             source = texture_re.replace_all(&source, &format!("_texture_{}", i)).to_string();
+        }
+
+        // Replace @model() - Note: This creates a struct-like accessor
+        // Usage: @model("file.obj").positions[idx] becomes _model_0_positions.data[idx]
+        for (i, model) in metadata.models.iter().enumerate() {
+            let escaped = model.replace(".", "\\.");
+            // Replace @model("file").positions with _model_N_positions.data
+            let pos_re = Regex::new(&format!(r#"@model\("{}"\)\.positions"#, escaped))?;
+            source = pos_re.replace_all(&source, &format!("_model_{}_positions.data", i)).to_string();
+
+            // Replace @model("file").normals with _model_N_normals.data
+            let norm_re = Regex::new(&format!(r#"@model\("{}"\)\.normals"#, escaped))?;
+            source = norm_re.replace_all(&source, &format!("_model_{}_normals.data", i)).to_string();
+
+            // Replace any remaining @model("file") with a comment about proper usage
+            let model_re = Regex::new(&format!(r#"@model\("{}"\)"#, escaped))?;
+            source = model_re.replace_all(&source, &format!("/* @model(\"{}\") - use .positions or .normals */", model)).to_string();
         }
 
         Ok((header + &source, metadata))

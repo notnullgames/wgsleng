@@ -41,6 +41,7 @@ These all work local, and on the web:
 - [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
 - [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
 - [input](https://notnullgames.github.io/wgsl-engine/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
+- [3d](https://notnullgames.github.io/wgsl-engine/#examples/3d/main.wgsl): Comprehensive 3D graphics library with ray marching and SDF primitives
 - [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
 
 ### Native

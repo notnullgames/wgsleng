@@ -36,12 +36,14 @@ struct State {
     compute_bind_group: wgpu::BindGroup,
     render_bind_group0: wgpu::BindGroup,
     render_bind_group1: wgpu::BindGroup,
+    render_bind_group2: Option<wgpu::BindGroup>,
     engine_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
     buffer_offsets: BufferOffsets,
     buttons: [i32; 12],
     last_time: std::time::Instant,
     time: f32,
+    model_vertex_count: usize,
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
     sound_buffers: Vec<Vec<u8>>,
@@ -132,6 +134,45 @@ impl State {
         for sound_file in &metadata.sounds {
             let data = preprocessor.game_source.read_file(sound_file)?;
             sound_buffers.push(data);
+        }
+
+        // Load models
+        let mut models = Vec::new();
+        let mut model_vertex_counts = Vec::new();
+        for model_file in &metadata.models {
+            let model_data = preprocessor.game_source.read_file(model_file)?;
+            let model_path = std::path::PathBuf::from(model_file);
+
+            // Write to temp file for OBJ loader
+            let temp_path = std::env::temp_dir().join(model_path.file_name().unwrap());
+            std::fs::write(&temp_path, model_data)?;
+
+            let model = wgsleng::ObjModel::load(&temp_path)?;
+            model_vertex_counts.push(model.vertex_count());
+
+            // Create positions buffer
+            let positions_data: Vec<f32> = model.positions.iter()
+                .flat_map(|p| p.iter().copied())
+                .collect();
+
+            let positions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Model Positions"),
+                contents: bytemuck::cast_slice(&positions_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            // Create normals buffer
+            let normals_data: Vec<f32> = model.normals.iter()
+                .flat_map(|n| n.iter().copied())
+                .collect();
+
+            let normals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Model Normals"),
+                contents: bytemuck::cast_slice(&normals_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            models.push((positions_buffer, normals_buffer));
         }
 
         // Load textures
@@ -288,9 +329,51 @@ impl State {
             }],
         });
 
+        // Group 2: model buffers (positions and normals for each model)
+        let mut model_group_entries = Vec::new();
+        for i in 0..metadata.models.len() {
+            let binding_base = 1 + i * 2;
+            // Positions buffer
+            model_group_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: binding_base as u32,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            });
+            // Normals buffer
+            model_group_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (binding_base + 1) as u32,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            });
+        }
+
+        let render_bind_group_layout2 = if !model_group_entries.is_empty() {
+            Some(device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Render Bind Group Layout 2"),
+                entries: &model_group_entries,
+            }))
+        } else {
+            None
+        };
+
+        let mut render_layouts: Vec<&wgpu::BindGroupLayout> = vec![&render_bind_group_layout0, &render_bind_group_layout1];
+        if let Some(ref layout2) = render_bind_group_layout2 {
+            render_layouts.push(layout2);
+        }
+
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&render_bind_group_layout0, &render_bind_group_layout1],
+            bind_group_layouts: &render_layouts,
             push_constant_ranges: &[],
         });
 
@@ -397,6 +480,29 @@ impl State {
                 resource: engine_buffer.as_entire_binding(),
             }],
         });
+
+        // Create model bind group if models exist
+        let render_bind_group2 = if let Some(ref layout2) = render_bind_group_layout2 {
+            let mut model_entries = Vec::new();
+            for (i, (positions_buf, normals_buf)) in models.iter().enumerate() {
+                let binding_base = 1 + i * 2;
+                model_entries.push(wgpu::BindGroupEntry {
+                    binding: binding_base as u32,
+                    resource: positions_buf.as_entire_binding(),
+                });
+                model_entries.push(wgpu::BindGroupEntry {
+                    binding: (binding_base + 1) as u32,
+                    resource: normals_buf.as_entire_binding(),
+                });
+            }
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Render Bind Group 2"),
+                layout: layout2,
+                entries: &model_entries,
+            }))
+        } else {
+            None
+        };
 
         // Create empty bind group for @group(0) (compute shader doesn't use it but layout requires it)
         let empty_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
