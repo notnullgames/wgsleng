@@ -147,6 +147,11 @@ let uv = (dist + 32.0) / 64.0;
 let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0);
 ```
 
+## asset credits
+
+- fonts are from [ianhan/BitmapFonts](https://github.com/ianhan/BitmapFonts/blob/main/previews.md)
+- Bob Ross pixel-art is from [ravenist](https://www.pixilart.com/ravenist)
+
 ## License
 
 This project is licensed under the [zlib/libpng License](LICENSE) - a permissive open-source license that allows commercial use, modification, and redistribution with minimal restrictions.
