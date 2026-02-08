@@ -18,9 +18,7 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 npm start
 ```
 
-By default it will show bob-example, but you can switch to others:
-
-## Examples
+#### Examples
 
 These all work local, and on the web:
 
