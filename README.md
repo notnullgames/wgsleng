@@ -97,7 +97,7 @@ struct GameState {
 // set the size of the window, defaults to 800x600
 @set_size(600, 600);
 
-// inline the source of another file (in your zip/dir)
+// inline the source of another file (from your zip/dir)
 @import("helpers.wgsl");
 
 // ASSETS
