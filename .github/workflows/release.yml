@@ -18,13 +18,10 @@ permissions:
   contents: write
 
 jobs:
+  # Standard builds for common platforms
   build:
     name: Build for ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    # Skip ARM builds by default for tag releases, unless build_arm is true
-    if: |
-      matrix.experimental != true ||
-      github.event.inputs.build_arm == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -45,12 +42,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: wgsl-game.exe
             asset_name: wgsleng-windows-x86_64.exe
-          # ARM64 Linux - uses GitHub ARM runners (experimental, disabled by default)
-          - os: ubuntu-24.04-arm64
-            target: aarch64-unknown-linux-gnu
-            artifact_name: wgsl-game
-            asset_name: wgsleng-linux-aarch64
-            experimental: true
 
     steps:
       - uses: actions/checkout@v4
@@ -79,5 +70,41 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ARM64 Linux build (experimental, disabled by default)
+  build-arm:
+    name: Build for ARM64 Linux (experimental)
+    runs-on: ubuntu-24.04-arm64
+    # Only run when manually triggered with build_arm=true
+    if: github.event.inputs.build_arm == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev pkg-config
+
+      - name: Build
+        working-directory: ./native
+        run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifacts
+          cp native/target/aarch64-unknown-linux-gnu/release/wgsl-game artifacts/wgsleng-linux-aarch64
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/wgsleng-linux-aarch64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
