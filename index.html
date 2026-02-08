@@ -86,7 +86,7 @@
           // Set page title and info from game metadata
           document.title = game.title;
           titleEl.textContent = game.title;
-          infoEl.innerHTML = `Controls: Arrows for DPAD, X/Z/S/A/Q/W/Shift/Enter for A/B/X/Y/L/R/SELECT/START<br/>You can <a href="${cart}">view source</a><br />Made with <a href="https://github.com/notnullgames/wgsleng"></a>`;
+          infoEl.innerHTML = `Controls: Arrows for DPAD, X/Z/S/A/Q/W/Shift/Enter for A/B/X/Y/L/R/SELECT/START<br/>You can <a href="${cart}">view source</a><br />Made with <a href="https://github.com/notnullgames/wgsleng">wgsleng</a>`;
         })
         .catch((err) => {
           handleError(err.stack || err.message);
