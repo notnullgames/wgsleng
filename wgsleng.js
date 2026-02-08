@@ -5,6 +5,158 @@ import { Unzip, AsyncUnzipInflate } from "fflate";
 
 const decoder = new TextDecoder();
 
+// Parse OBJ file format
+function parseOBJ(objText) {
+  const positions = [];
+  const normals = [];
+  const indices = [];
+
+  const lines = objText.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const parts = trimmed.split(/\s+/);
+    if (parts.length === 0) continue;
+
+    if (parts[0] === 'v' && parts.length >= 4) {
+      // Vertex position
+      positions.push([
+        parseFloat(parts[1]),
+        parseFloat(parts[2]),
+        parseFloat(parts[3])
+      ]);
+    } else if (parts[0] === 'vn' && parts.length >= 4) {
+      // Vertex normal
+      normals.push([
+        parseFloat(parts[1]),
+        parseFloat(parts[2]),
+        parseFloat(parts[3])
+      ]);
+    } else if (parts[0] === 'f' && parts.length >= 4) {
+      // Face (triangle)
+      for (let i = 1; i <= 3; i++) {
+        const vertexData = parts[i].split('/');
+        const posIndex = parseInt(vertexData[0]) - 1; // OBJ is 1-indexed
+        indices.push(posIndex);
+      }
+    }
+  }
+
+  // If no normals in file, calculate them
+  if (normals.length === 0) {
+    const tempNormals = new Array(positions.length).fill(null).map(() => [0, 0, 0]);
+
+    // Accumulate face normals for each vertex
+    for (let i = 0; i < indices.length; i += 3) {
+      const i0 = indices[i];
+      const i1 = indices[i + 1];
+      const i2 = indices[i + 2];
+
+      const v0 = positions[i0];
+      const v1 = positions[i1];
+      const v2 = positions[i2];
+
+      // Calculate edges
+      const edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+      const edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+
+      // Cross product
+      const normal = [
+        edge1[1] * edge2[2] - edge1[2] * edge2[1],
+        edge1[2] * edge2[0] - edge1[0] * edge2[2],
+        edge1[0] * edge2[1] - edge1[1] * edge2[0]
+      ];
+
+      // Accumulate to each vertex
+      tempNormals[i0][0] += normal[0];
+      tempNormals[i0][1] += normal[1];
+      tempNormals[i0][2] += normal[2];
+      tempNormals[i1][0] += normal[0];
+      tempNormals[i1][1] += normal[1];
+      tempNormals[i1][2] += normal[2];
+      tempNormals[i2][0] += normal[0];
+      tempNormals[i2][1] += normal[1];
+      tempNormals[i2][2] += normal[2];
+    }
+
+    // Normalize
+    for (const n of tempNormals) {
+      const len = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+      if (len > 0) {
+        n[0] /= len;
+        n[1] /= len;
+        n[2] /= len;
+      }
+      normals.push(n);
+    }
+  }
+
+  // If no normals in file, calculate smooth normals
+  if (normals.length === 0) {
+    const tempNormals = new Array(positions.length).fill(null).map(() => [0, 0, 0]);
+
+    // Accumulate face normals for each vertex
+    for (let i = 0; i < indices.length; i += 3) {
+      const i0 = indices[i];
+      const i1 = indices[i + 1];
+      const i2 = indices[i + 2];
+
+      const v0 = positions[i0];
+      const v1 = positions[i1];
+      const v2 = positions[i2];
+
+      // Calculate edges
+      const edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+      const edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+
+      // Cross product
+      const normal = [
+        edge1[1] * edge2[2] - edge1[2] * edge2[1],
+        edge1[2] * edge2[0] - edge1[0] * edge2[2],
+        edge1[0] * edge2[1] - edge1[1] * edge2[0]
+      ];
+
+      // Accumulate to each vertex
+      tempNormals[i0][0] += normal[0];
+      tempNormals[i0][1] += normal[1];
+      tempNormals[i0][2] += normal[2];
+      tempNormals[i1][0] += normal[0];
+      tempNormals[i1][1] += normal[1];
+      tempNormals[i1][2] += normal[2];
+      tempNormals[i2][0] += normal[0];
+      tempNormals[i2][1] += normal[1];
+      tempNormals[i2][2] += normal[2];
+    }
+
+    // Normalize
+    for (const n of tempNormals) {
+      const len = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+      if (len > 0) {
+        n[0] /= len;
+        n[1] /= len;
+        n[2] /= len;
+      }
+      normals.push(n);
+    }
+  }
+
+  // Expand vertices based on indices (convert indexed mesh to vertex list)
+  const expandedPositions = [];
+  const expandedNormals = [];
+
+  for (const idx of indices) {
+    expandedPositions.push(positions[idx]);
+    expandedNormals.push(normals[idx]);
+  }
+
+  return {
+    positions: expandedPositions,
+    normals: expandedNormals,
+    vertexCount: expandedPositions.length
+  };
+}
+
 // get a file from a zip
 async function extractSingleFile(zipData, targetFilename) {
   return new Promise((resolve, reject) => {
@@ -162,6 +314,15 @@ class WGSLGameEngine {
       }
     }
 
+    // Find all @model() references
+    const modelMatches = source.matchAll(/@model\("([^"]+)"\)/g);
+    metadata.models = [];
+    for (const match of modelMatches) {
+      if (!metadata.models.includes(match[1])) {
+        metadata.models.push(match[1]);
+      }
+    }
+
     // Remove @set_* directives
     source = source.replace(/@set_title\([^)]+\)[^\n]*/g, "");
     source = source.replace(/@set_size\([^)]+\)[^\n]*/g, "");
@@ -286,7 +447,21 @@ class WGSLGameEngine {
       });
 
       // Add engine buffer
-      header += `\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n\n`;
+      header += `\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n`;
+
+      // Add model buffers
+      if (metadata.models && metadata.models.length > 0) {
+        header += `\n// Model data buffers\n`;
+        metadata.models.forEach((modelName, i) => {
+          const bindingBase = 1 + i * 2;
+          header += `struct Model${i}Positions { data: array<vec3f> }\n`;
+          header += `@group(2) @binding(${bindingBase}) var<storage, read> _model_${i}_positions: Model${i}Positions; // ${modelName}\n`;
+          header += `struct Model${i}Normals { data: array<vec3f> }\n`;
+          header += `@group(2) @binding(${bindingBase + 1}) var<storage, read> _model_${i}_normals: Model${i}Normals;\n`;
+        });
+      }
+
+      header += `\n`;
 
       // Remove GameState struct from source since we added it to header
       if (gameStateStruct) {
@@ -339,6 +514,22 @@ class WGSLGameEngine {
       );
       source = source.replace(regex, `_texture_${i}`);
     });
+
+    // Replace @model() references
+    if (metadata.models) {
+      metadata.models.forEach((modelName, i) => {
+        const escapedName = modelName.replace(/\./g, "\\.");
+        // Replace .positions with buffer access
+        const posRegex = new RegExp(`@model\\("${escapedName}"\\)\\.positions`, "g");
+        source = source.replace(posRegex, `_model_${i}_positions.data`);
+        // Replace .normals with buffer access
+        const normRegex = new RegExp(`@model\\("${escapedName}"\\)\\.normals`, "g");
+        source = source.replace(normRegex, `_model_${i}_normals.data`);
+        // Replace any remaining @model references with comment
+        const modelRegex = new RegExp(`@model\\("${escapedName}"\\)`, "g");
+        source = source.replace(modelRegex, `/* @model("${modelName}") - use .positions or .normals */`);
+      });
+    }
 
     return {
       code: header + source,
@@ -446,14 +637,29 @@ class WGSLGameEngine {
     this.gameTitle = metadata.title;
     this.canvas.width = metadata.width;
     this.canvas.height = metadata.height;
+
+    // Create depth texture for 3D rendering
+    this.depthTexture = this.device.createTexture({
+      size: [this.canvas.width, this.canvas.height],
+      format: "depth24plus",
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    this.depthView = this.depthTexture.createView();
+
     this.soundFiles = metadata.sounds;
     this.textureFiles = metadata.textures;
     this.audioCount = metadata.sounds.length;
     this.textureCount = metadata.textures.length;
     this.stateSize = metadata.stateSize;
 
+    // Store model files
+    this.modelFiles = metadata.models || [];
+
     // Load textures
     await this.loadTextures();
+
+    // Load models
+    await this.loadModels();
 
     // Load sounds
     await this.loadSounds();
@@ -504,7 +710,7 @@ class WGSLGameEngine {
       entries: renderGroup0Entries,
     });
 
-    // Group 1: engine buffer (read-only for render shaders)
+    // Group 1: engine buffer (storage for fragment only)
     this.renderBindGroupLayout1 = this.device.createBindGroupLayout({
       label: "Render Bind Group Layout 1",
       entries: [
@@ -515,6 +721,33 @@ class WGSLGameEngine {
         },
       ],
     });
+
+    // Group 2: model buffers (if models exist)
+    const modelGroup2Entries = [];
+    if (this.models && this.models.length > 0) {
+      this.models.forEach((model, i) => {
+        const bindingBase = 1 + i * 2;
+        // Positions buffer
+        modelGroup2Entries.push({
+          binding: bindingBase,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        });
+        // Normals buffer
+        modelGroup2Entries.push({
+          binding: bindingBase + 1,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "read-only-storage" },
+        });
+      });
+    }
+
+    this.renderBindGroupLayout2 = modelGroup2Entries.length > 0
+      ? this.device.createBindGroupLayout({
+          label: "Render Bind Group Layout 2",
+          entries: modelGroup2Entries,
+        })
+      : null;
 
     // Compute bind group layout for engine buffer (read-write)
     this.computeBindGroupLayout1 = this.device.createBindGroupLayout({
@@ -529,9 +762,14 @@ class WGSLGameEngine {
     });
 
     // Create pipeline layouts
+    const renderBindGroupLayouts = [this.renderBindGroupLayout0, this.renderBindGroupLayout1];
+    if (this.renderBindGroupLayout2) {
+      renderBindGroupLayouts.push(this.renderBindGroupLayout2);
+    }
+
     const renderPipelineLayout = this.device.createPipelineLayout({
       label: "Render Pipeline Layout",
-      bindGroupLayouts: [this.renderBindGroupLayout0, this.renderBindGroupLayout1],
+      bindGroupLayouts: renderBindGroupLayouts,
     });
 
     const computePipelineLayout = this.device.createPipelineLayout({
@@ -557,6 +795,11 @@ class WGSLGameEngine {
       },
       primitive: {
         topology: "triangle-list",
+      },
+      depthStencil: {
+        format: "depth24plus",
+        depthWriteEnabled: true,
+        depthCompare: "less",
       },
     });
 
@@ -619,6 +862,46 @@ class WGSLGameEngine {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
+  }
+
+  async loadModels() {
+    this.models = [];
+    this.modelVertexCount = 0;
+
+    for (const filename of this.modelFiles) {
+      // Load OBJ file
+      const objText = await this.readFileText(filename);
+      const model = parseOBJ(objText);
+
+      console.log(`Loaded model: ${filename} (${model.vertexCount} vertices, ${model.vertexCount / 3} triangles)`);
+
+      this.modelVertexCount = model.vertexCount;
+
+      // Create positions buffer
+      // IMPORTANT: array<vec3f> in WGSL storage buffers has 16-byte alignment (like vec4)
+      // So we need to pad each vec3 to 4 floats
+      const positionsData = new Float32Array(model.positions.flatMap(p => [p[0], p[1], p[2], 0.0]));
+      const positionsBuffer = this.device.createBuffer({
+        size: positionsData.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      new Float32Array(positionsBuffer.getMappedRange()).set(positionsData);
+      positionsBuffer.unmap();
+
+      // Create normals buffer
+      // Same padding required for normals
+      const normalsData = new Float32Array(model.normals.flatMap(n => [n[0], n[1], n[2], 0.0]));
+      const normalsBuffer = this.device.createBuffer({
+        size: normalsData.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      new Float32Array(normalsBuffer.getMappedRange()).set(normalsData);
+      normalsBuffer.unmap();
+
+      this.models.push({ positionsBuffer, normalsBuffer });
+    }
   }
 
   async loadSounds() {
@@ -778,6 +1061,27 @@ class WGSLGameEngine {
       ],
     });
 
+    // Create model bind group if models exist
+    if (this.renderBindGroupLayout2 && this.models && this.models.length > 0) {
+      const modelEntries = [];
+      this.models.forEach((model, i) => {
+        const bindingBase = 1 + i * 2;
+        modelEntries.push({
+          binding: bindingBase,
+          resource: { buffer: model.positionsBuffer },
+        });
+        modelEntries.push({
+          binding: bindingBase + 1,
+          resource: { buffer: model.normalsBuffer },
+        });
+      });
+
+      this.renderBindGroup2 = this.device.createBindGroup({
+        layout: this.renderBindGroupLayout2,
+        entries: modelEntries,
+      });
+    }
+
     // Create bind group for compute pipeline using explicit layout
     this.computeBindGroup1 = this.device.createBindGroup({
       layout: this.computeBindGroupLayout1,
@@ -917,12 +1221,24 @@ class WGSLGameEngine {
           storeOp: "store",
         },
       ],
+      depthStencilAttachment: {
+        view: this.depthView,
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+      },
     });
 
     renderPass.setPipeline(this.renderPipeline);
     renderPass.setBindGroup(0, this.renderBindGroup0);
     renderPass.setBindGroup(1, this.renderBindGroup1);
-    renderPass.draw(3); // Fullscreen triangle
+    if (this.renderBindGroup2) {
+      renderPass.setBindGroup(2, this.renderBindGroup2);
+    }
+
+    // Draw either model vertices or fullscreen triangle
+    const vertexCount = this.modelVertexCount > 0 ? this.modelVertexCount : 3;
+    renderPass.draw(vertexCount);
     renderPass.end();
 
     this.device.queue.submit([commandEncoder.finish()]);

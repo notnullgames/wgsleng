@@ -68,18 +68,29 @@ impl ObjModel {
             }
         }
 
-        // If no normals provided, calculate them
+        // If no normals provided, calculate smooth normals
         if normals.is_empty() && !positions.is_empty() && !indices.is_empty() {
             normals = Self::calculate_normals(&positions, &indices);
         }
 
-        println!("Loaded OBJ: {} vertices, {} normals, {} triangles",
-                 positions.len(), normals.len(), indices.len() / 3);
+        // Expand vertices based on indices (convert indexed to vertex list)
+        let mut expanded_positions = Vec::new();
+        let mut expanded_normals = Vec::new();
+
+        for &idx in &indices {
+            expanded_positions.push(positions[idx as usize]);
+            if !normals.is_empty() {
+                expanded_normals.push(normals[idx as usize]);
+            }
+        }
+
+        println!("Loaded OBJ: {} original vertices, {} triangles, {} expanded vertices",
+                 positions.len(), indices.len() / 3, expanded_positions.len());
 
         Ok(ObjModel {
-            positions,
-            normals,
-            indices,
+            positions: expanded_positions,
+            normals: expanded_normals,
+            indices: Vec::new(), // Not needed anymore
         })
     }
 
@@ -96,10 +107,13 @@ impl ObjModel {
             let v1 = positions[i1];
             let v2 = positions[i2];
 
-            // Calculate face normal
+            // Calculate face normal using cross product
+            // edge1 × edge2 gives the normal
             let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
             let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
 
+            // Cross product: edge1 × edge2
+            // Note: Reversing this to edge2 × edge1 would flip the normal
             let normal = [
                 edge1[1] * edge2[2] - edge1[2] * edge2[1],
                 edge1[2] * edge2[0] - edge1[0] * edge2[2],

@@ -75,6 +75,51 @@ async fn main() {
         source: wgpu::ShaderSource::Wgsl(processed_code.into()),
     });
 
+    // Load models if present
+    let mut models = Vec::new();
+    let mut model_vertex_count = 0usize;
+    for model_file in &metadata.models {
+        let model_data = preprocessor.game_source.read_file(model_file)
+            .expect(&format!("Failed to load model: {}", model_file));
+        let model_path = std::path::PathBuf::from(model_file);
+
+        // Write to temp file for OBJ loader
+        let temp_path = std::env::temp_dir().join(model_path.file_name().unwrap());
+        std::fs::write(&temp_path, model_data)
+            .expect("Failed to write temp model file");
+
+        let model = wgsleng::ObjModel::load(&temp_path)
+            .expect("Failed to load OBJ model");
+        model_vertex_count = model.vertex_count();
+
+        // Create positions buffer
+        // IMPORTANT: array<vec3f> in WGSL storage buffers has 16-byte alignment (like vec4)
+        // So we need to pad each vec3 to 4 floats
+        let positions_data: Vec<f32> = model.positions.iter()
+            .flat_map(|p| [p[0], p[1], p[2], 0.0]) // Add padding
+            .collect();
+
+        let positions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Model Positions"),
+            contents: bytemuck::cast_slice(&positions_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Create normals buffer
+        // Same padding required for normals
+        let normals_data: Vec<f32> = model.normals.iter()
+            .flat_map(|n| [n[0], n[1], n[2], 0.0]) // Add padding
+            .collect();
+
+        let normals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Model Normals"),
+            contents: bytemuck::cast_slice(&normals_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        models.push((positions_buffer, normals_buffer));
+    }
+
     // Load textures if present
     let mut textures = Vec::new();
     for texture_file in &metadata.textures {
@@ -149,6 +194,24 @@ async fn main() {
     });
 
     let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Create depth texture for proper 3D rendering
+    let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Depth Texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth24Plus,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+
+    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
     // Calculate buffer layout matching WGSL struct
     let button_size = 12 * 4; // 48 bytes
@@ -225,6 +288,39 @@ async fn main() {
         }],
     });
 
+    // Group 2: model buffers
+    let mut model_layout_entries = vec![];
+    for i in 0..metadata.models.len() {
+        let binding_base = 1 + i * 2;
+        // Positions buffer
+        model_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: binding_base as u32,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
+        // Normals buffer
+        model_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: (binding_base + 1) as u32,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
+    }
+
+    let bind_group_layout2 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bind Group Layout 2"),
+        entries: &model_layout_entries,
+    });
+
     // Create bind groups
     let texture_views: Vec<_> = textures.iter()
         .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
@@ -259,9 +355,29 @@ async fn main() {
         }],
     });
 
+    // Create bind group 2 for models
+    let mut model_entries = vec![];
+    for (i, (positions_buffer, normals_buffer)) in models.iter().enumerate() {
+        let binding_base = 1 + i * 2;
+        model_entries.push(wgpu::BindGroupEntry {
+            binding: binding_base as u32,
+            resource: positions_buffer.as_entire_binding(),
+        });
+        model_entries.push(wgpu::BindGroupEntry {
+            binding: (binding_base + 1) as u32,
+            resource: normals_buffer.as_entire_binding(),
+        });
+    }
+
+    let bind_group2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bind Group 2"),
+        layout: &bind_group_layout2,
+        entries: &model_entries,
+    });
+
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("Pipeline Layout"),
-        bind_group_layouts: &[&bind_group_layout0, &bind_group_layout1],
+        bind_group_layouts: &[&bind_group_layout0, &bind_group_layout1, &bind_group_layout2],
         push_constant_ranges: &[],
     });
 
@@ -285,7 +401,13 @@ async fn main() {
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24Plus,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
         cache: None,
@@ -307,7 +429,14 @@ async fn main() {
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });
@@ -315,7 +444,9 @@ async fn main() {
         render_pass.set_pipeline(&render_pipeline);
         render_pass.set_bind_group(0, &bind_group0, &[]);
         render_pass.set_bind_group(1, &bind_group1, &[]);
-        render_pass.draw(0..3, 0..1);
+        render_pass.set_bind_group(2, &bind_group2, &[]);
+        let vertex_count = if model_vertex_count > 0 { model_vertex_count as u32 } else { 3 };
+        render_pass.draw(0..vertex_count, 0..1);
     }
 
     // Copy texture to buffer

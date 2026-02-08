@@ -44,6 +44,8 @@ struct State {
     last_time: std::time::Instant,
     time: f32,
     model_vertex_count: usize,
+    depth_texture: wgpu::Texture,
+    depth_view: wgpu::TextureView,
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
     sound_buffers: Vec<Vec<u8>>,
@@ -128,6 +130,24 @@ impl State {
         };
         surface.configure(&device, &config);
 
+        // Create depth texture for 3D rendering
+        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d {
+                width: metadata.width,
+                height: metadata.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24Plus,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Load audio
         let (_stream, stream_handle) = OutputStream::try_default().unwrap();
         let mut sound_buffers = Vec::new();
@@ -151,8 +171,9 @@ impl State {
             model_vertex_counts.push(model.vertex_count());
 
             // Create positions buffer
+            // IMPORTANT: array<vec3f> in WGSL storage buffers has 16-byte alignment (like vec4)
             let positions_data: Vec<f32> = model.positions.iter()
-                .flat_map(|p| p.iter().copied())
+                .flat_map(|p| [p[0], p[1], p[2], 0.0]) // Add padding
                 .collect();
 
             let positions_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -162,8 +183,9 @@ impl State {
             });
 
             // Create normals buffer
+            // Same padding required for normals
             let normals_data: Vec<f32> = model.normals.iter()
-                .flat_map(|n| n.iter().copied())
+                .flat_map(|n| [n[0], n[1], n[2], 0.0]) // Add padding
                 .collect();
 
             let normals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -314,7 +336,7 @@ impl State {
             entries: &render_group0_entries,
         });
 
-        // Group 1: engine buffer (writable, but only FRAGMENT visibility to avoid VERTEX_WRITABLE_STORAGE feature)
+        // Group 1: engine buffer (read_write for fragment, not accessible in vertex)
         let render_bind_group_layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Render Bind Group Layout 1"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -401,7 +423,13 @@ impl State {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
@@ -535,12 +563,16 @@ impl State {
             compute_bind_group,
             render_bind_group0,
             render_bind_group1,
+            render_bind_group2,
             engine_buffer,
             staging_buffer,
             buffer_offsets,
             buttons: [0; 12],
             last_time: std::time::Instant::now(),
             time: 0.0,
+            model_vertex_count: model_vertex_counts.get(0).copied().unwrap_or(0),
+            depth_texture,
+            depth_view,
             _stream,
             stream_handle,
             sound_buffers,
@@ -652,7 +684,14 @@ impl State {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
@@ -660,7 +699,17 @@ impl State {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.render_bind_group0, &[]);
             render_pass.set_bind_group(1, &self.render_bind_group1, &[]);
-            render_pass.draw(0..3, 0..1);
+            if let Some(ref bind_group2) = self.render_bind_group2 {
+                render_pass.set_bind_group(2, bind_group2, &[]);
+            }
+
+            // Draw either model vertices or fullscreen triangle
+            let vertex_count = if self.model_vertex_count > 0 {
+                self.model_vertex_count as u32
+            } else {
+                3  // Fullscreen triangle
+            };
+            render_pass.draw(0..vertex_count, 0..1);
         }
 
         // Copy audio buffer to staging for readback

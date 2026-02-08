@@ -39,9 +39,11 @@ The engine maps keyboard keys to a SNES-style controller:
 These all work local, and on the web:
 
 - [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
-- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
+- [bunny](https://notnullgames.github.io/wgsl-engine/#examples/bunny/main.wgsl): Demo that loads a 3D model
+- [cubespin](https://notnullgames.github.io/wgsl-engine/#examples/cubespin/main.wgsl): Simple spinning 3d cube
 - [input](https://notnullgames.github.io/wgsl-engine/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
-- [3d](https://notnullgames.github.io/wgsl-engine/#examples/3d/main.wgsl): Comprehensive 3D graphics library with ray marching and SDF primitives
+- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
+- [raymarch](https://notnullgames.github.io/wgsl-engine/#examples/raymarch/main.wgsl): Provides some nice 3D drawing functions with ray marching and SDF primitives
 - [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
 
 ### Native
@@ -78,7 +80,12 @@ npm run game
 You might find it helpful to render WGSL to images (for LLM-comparison and things.) You can do that like this:
 
 ```sh
+# output image of first-frame
 npm run render examples/logo/main.wgsl /tmp/logo.png
+
+# same, but also print the generated shader
+DEBUG_SHADER=1 npm run render examples/logo/main.wgsl /tmp/logo.png
+
 open /tmp/logo.png
 ```
 
@@ -131,6 +138,9 @@ struct GameState {
 // ASSETS
 @sound("bump.ogg").play();
 @sound("bump.ogg").stop();
+
+let pos = @model("bunny.obj").positions[idx];
+let normal = @model("bunny.obj").normals[idx];
 
 let uv = (dist + 32.0) / 64.0;
 let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0);
