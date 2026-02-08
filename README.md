@@ -134,3 +134,7 @@ struct GameState {
 let uv = (dist + 32.0) / 64.0;
 let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0);
 ```
+
+## License
+
+This project is licensed under the [zlib/libpng License](LICENSE) - a permissive open-source license that allows commercial use, modification, and redistribution with minimal restrictions.

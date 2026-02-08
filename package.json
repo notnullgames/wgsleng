@@ -2,6 +2,7 @@
   "name": "wgsleng",
   "version": "0.0.1",
   "main": "wgsleng.js",
+  "license": "Zlib",
   "scripts": {
     "start": "npx -y live-server",
     "native": "cd native && cargo build --release",
