@@ -1,8 +1,6 @@
 @set_title("Stanford Bunny")
 @set_size(800, 600)
 
-@model("bunny.obj")
-
 // Transforms buffer that vertex shader can access
 struct Transforms {
     rotation: f32,
