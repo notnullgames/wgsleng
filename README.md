@@ -44,7 +44,8 @@ These all work local, and on the web:
 - [input](https://notnullgames.github.io/wgsl-engine/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
 - [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
 - [raymarch](https://notnullgames.github.io/wgsl-engine/#examples/raymarch/main.wgsl): Provides some nice 3D drawing functions with ray marching and SDF primitives
-- [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
+- [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): Classic snake game
+- [tetris](https://notnullgames.github.io/wgsl-engine/#examples/tetris/main.wgsl): Classic tetris game. This also includes text-rendering. It's a bit obtuse, but works.
 
 ### Native
 
