@@ -7,7 +7,7 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 - **Single-file games**: Write your entire game in WGSL
 - **Web runtime**: Run games in any WebGPU-capable browser
 - **Native runtime**: Standalone Rust-based player for desktop
-- **Simple input**: Supports arrow keys/WASD for movement, Z/X (or K/L) for A/B buttons
+- **Simple input**: Keyboard mapped to SNES controller (see Controls below)
 - **Asset support**: Include images and audio in zip format
 
 ## Quick Start
@@ -18,12 +18,29 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 npm start
 ```
 
+## Controls
+
+The engine maps keyboard keys to a SNES-style controller:
+
+| Button     | Key        | Color/Position |
+| ---------- | ---------- | -------------- |
+| **D-Pad**  | Arrow keys | Left side      |
+| **A**      | X          | Red, right     |
+| **B**      | Z          | Yellow, bottom |
+| **X**      | S          | Blue, top      |
+| **Y**      | A          | Green, left    |
+| **L**      | Q          | Left shoulder  |
+| **R**      | W          | Right shoulder |
+| **SELECT** | Shift      | Bottom center  |
+| **START**  | Enter      | Bottom center  |
+
 #### Examples
 
 These all work local, and on the web:
 
 - [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
 - [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
+- [input](https://notnullgames.github.io/wgsl-engine/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
 - [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
 
 ### Native
@@ -53,6 +70,15 @@ Build example zips:
 
 ```bash
 npm run game
+```
+
+### image-only output
+
+You might find it helpful to render WGSL to images (for LLM-comparison and things.) You can do that like this:
+
+```sh
+npm run render examples/logo/main.wgsl /tmp/logo.png
+open /tmp/logo.png
 ```
 
 ### extensions to WGSL

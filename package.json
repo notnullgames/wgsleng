@@ -5,9 +5,11 @@
   "scripts": {
     "start": "npx -y live-server",
     "native": "cd native && cargo build --release",
+    "render": "cargo run --manifest-path native/Cargo.toml --example render_to_image",
     "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg",
     "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl",
     "game:logo": "rm -f logo.zip && cd examples/logo && zip ../../logo.zip *.wgsl",
+    "game:input": "rm -f input.zip && cd examples/input && zip ../../input.zip *.wgsl",
     "game": "npx -y npm-run-all -p game:*"
   },
   "author": "konsumer",

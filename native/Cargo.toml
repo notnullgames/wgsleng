@@ -3,6 +3,18 @@ name = "wgsleng"
 version = "0.0.1"
 edition = "2021"
 
+[lib]
+name = "wgsleng"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wgsleng"
+path = "src/main.rs"
+
+[[example]]
+name = "render_to_image"
+path = "examples/render_to_image.rs"
+
 [dependencies]
 wgpu = "23"
 winit = "0.30"

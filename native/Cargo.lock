@@ -3544,7 +3544,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wgsl-game"
+name = "wgsleng"
 version = "0.0.1"
 dependencies = [
  "bytemuck",

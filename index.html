@@ -86,7 +86,7 @@
           // Set page title and info from game metadata
           document.title = game.title;
           titleEl.textContent = game.title;
-          infoEl.innerHTML = `Controls: Arrow keys or WASD to move, Z/K for A, X/L for B<br/>You can <a href="${cart}">view source</a>`;
+          infoEl.innerHTML = `Controls: Arrows for DPAD, X/Z/S/A/Q/W/Shift/Enter for A/B/X/Y/L/R/SELECT/START<br/>You can <a href="${cart}">view source</a>`;
         })
         .catch((err) => {
           handleError(err.stack || err.message);

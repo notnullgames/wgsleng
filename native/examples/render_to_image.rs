@@ -1,6 +1,7 @@
 // Simple tool to render a WGSL shader to a PNG image for testing
 use std::fs::File;
 use wgpu::util::DeviceExt;
+use wgsleng::{GameSource, PreprocessorState};
 
 #[tokio::main]
 async fn main() {
@@ -12,19 +13,45 @@ async fn main() {
 
     let shader_path = &args[1];
     let output_path = &args[2];
-    let width = 400u32;
-    let height = 300u32;
 
-    // Read shader
-    let mut shader_source = std::fs::read_to_string(shader_path)
+    // Determine entry file
+    let entry_file = if shader_path.ends_with(".wgsl") {
+        std::path::Path::new(shader_path)
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    } else {
+        "main.wgsl".to_string()
+    };
+
+    // Open game source (handles .wgsl files, directories, or .zip files)
+    let mut game_source = GameSource::open(shader_path)
+        .expect("Failed to open game source");
+
+    // Read and preprocess shader using the same logic as main program
+    let shader_code = game_source.read_text(&entry_file)
         .expect("Failed to read shader file");
 
-    // Remove @set_* directives
-    shader_source = shader_source
-        .lines()
-        .filter(|line| !line.trim().starts_with("@set_"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut preprocessor = PreprocessorState::new(game_source);
+    let (processed_code, metadata) = preprocessor.preprocess_shader(&shader_code, true)
+        .expect("Failed to preprocess shader");
+
+    // Debug: print processed shader if requested
+    if std::env::var("DEBUG_SHADER").is_ok() {
+        println!("\n=== PROCESSED SHADER ===");
+        println!("{}", processed_code);
+        println!("=== END SHADER ===\n");
+    }
+
+    println!("Game: {}", metadata.title);
+    println!("Size: {}x{}", metadata.width, metadata.height);
+    println!("Textures: {:?}", metadata.textures);
+    println!("Sounds: {:?}", metadata.sounds);
+
+    let width = metadata.width;
+    let height = metadata.height;
 
     // Create wgpu instance
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -42,32 +69,71 @@ async fn main() {
         .await
         .expect("Failed to create device");
 
-    // Create a simple shader with engine uniforms (matching main engine binding scheme)
-    let full_shader = format!(
-        r#"
-struct GameEngineHost {{
-    buttons: array<i32, 12>,
-    time: f32,
-    delta_time: f32,
-    screen_width: f32,
-    screen_height: f32,
-}}
-
-@group(0) @binding(0) var _engine_sampler: sampler;
-@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;
-
-{}
-"#,
-        shader_source
-    );
-
+    // Create shader module with preprocessed code
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Test Shader"),
-        source: wgpu::ShaderSource::Wgsl(full_shader.into()),
+        source: wgpu::ShaderSource::Wgsl(processed_code.into()),
+    });
+
+    // Load textures if present
+    let mut textures = Vec::new();
+    for texture_file in &metadata.textures {
+        let img_data = preprocessor.game_source.read_file(texture_file)
+            .expect(&format!("Failed to load texture: {}", texture_file));
+        let img = image::load_from_memory(&img_data)
+            .expect("Failed to decode image")
+            .to_rgba8();
+        let dimensions = img.dimensions();
+
+        let texture_size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Game Texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &img,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * dimensions.0),
+                rows_per_image: Some(dimensions.1),
+            },
+            texture_size,
+        );
+
+        textures.push(texture);
+    }
+
+    // Create sampler
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
     });
 
     // Create texture to render to
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+    let render_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Render Texture"),
         size: wgpu::Extent3d {
             width,
@@ -82,45 +148,69 @@ struct GameEngineHost {{
         view_formats: &[],
     });
 
-    let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture_view = render_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Calculate buffer layout matching WGSL struct
+    let button_size = 12 * 4; // 48 bytes
+    let float_data_size = 4 * 4; // 16 bytes
+    let state_alignment = 8;
+    let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
+    let audio_size = metadata.sounds.len() * 4;
+
+    let total_size_unaligned = button_size + float_data_size + aligned_state_size + audio_size;
+    let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
     // Create engine buffer
-    let engine_data: Vec<u8> = vec![0; 64]; // buttons(48) + time(4) + delta(4) + width(4) + height(4)
-    let mut data = engine_data.clone();
+    let mut init_data = vec![0u8; total_size];
 
-    // Set screen dimensions (at offsets 56 and 60)
-    data[56..60].copy_from_slice(&(width as f32).to_le_bytes());
-    data[60..64].copy_from_slice(&(height as f32).to_le_bytes());
+    // Initialize screen size in floats section (offset 48+8 = 56)
+    let width_bytes = (width as f32).to_le_bytes();
+    let height_bytes = (height as f32).to_le_bytes();
+    init_data[56..60].copy_from_slice(&width_bytes);
+    init_data[60..64].copy_from_slice(&height_bytes);
+
+    // Initialize player position to center in state section (offset 64)
+    let center_x = ((width / 2) as f32).to_le_bytes();
+    let center_y = ((height / 2) as f32).to_le_bytes();
+    init_data[64..68].copy_from_slice(&center_x);
+    init_data[68..72].copy_from_slice(&center_y);
 
     let engine_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Engine Buffer"),
-        contents: &data,
+        contents: &init_data,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
-    // Create bind group layouts to match main engine
-    // Group 0: sampler (required by preprocessor, even without textures)
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("Engine Sampler"),
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    });
-
-    let bind_group_layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("Bind Group Layout 0"),
-        entries: &[wgpu::BindGroupLayoutEntry {
+    // Create bind group layouts matching main engine
+    // Group 0: sampler (always) and textures (if present)
+    let mut render_group0_entries = vec![
+        wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
             count: None,
-        }],
+        }
+    ];
+
+    for i in 0..metadata.textures.len() {
+        render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: (i + 1) as u32,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+    }
+
+    let bind_group_layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Bind Group Layout 0"),
+        entries: &render_group0_entries,
     });
 
-    // Group 1: engine buffer (writable, but only FRAGMENT visibility to avoid VERTEX_WRITABLE_STORAGE feature)
+    // Group 1: engine buffer
     let bind_group_layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("Bind Group Layout 1"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -135,13 +225,29 @@ struct GameEngineHost {{
         }],
     });
 
+    // Create bind groups
+    let texture_views: Vec<_> = textures.iter()
+        .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+        .collect();
+
+    let mut group0_entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+        }
+    ];
+
+    for (i, view) in texture_views.iter().enumerate() {
+        group0_entries.push(wgpu::BindGroupEntry {
+            binding: (i + 1) as u32,
+            resource: wgpu::BindingResource::TextureView(view),
+        });
+    }
+
     let bind_group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bind Group 0"),
         layout: &bind_group_layout0,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Sampler(&sampler),
-        }],
+        entries: &group0_entries,
     });
 
     let bind_group1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -226,7 +332,7 @@ struct GameEngineHost {{
 
     encoder.copy_texture_to_buffer(
         wgpu::ImageCopyTexture {
-            texture: &texture,
+            texture: &render_texture,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
