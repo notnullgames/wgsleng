@@ -18,7 +18,15 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 npm start
 ```
 
-Open `http://localhost:8080/#examples/logo/main.wgsl` in a WebGPU-compatible browser.
+By default it will show bob-example, but you can switch to others:
+
+## Examples
+
+These all work local, and on the web:
+
+- [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
+- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things.
+- [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): (INCOMPLETE) Classic snake game
 
 ### Native
 
@@ -39,12 +47,6 @@ Games can be a single WGSL file or a zip archive containing:
 - Asset files (`.png`, `.ogg`, etc.)
 
 See the `examples/` directory for reference implementations.
-
-## Examples
-
-- **bob**: Demo with sprites and audio
-- **logo**: Shows how to draw things.
-- **snake**: (INCOMPLETE) Classic snake game
 
 Build example zips:
 
