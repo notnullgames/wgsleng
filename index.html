@@ -10,7 +10,7 @@
         display: flex;
         justify-content: center;
         align-items: center;
-        min-height: 100vh;
+        height: 100vh;
         background: #000;
         font-family: monospace;
         color: #fff;
@@ -25,6 +25,7 @@
         border: 2px solid #333;
         image-rendering: pixelated;
         image-rendering: crisp-edges;
+        max-height: calc(100vh - 5.5em);
       }
       #error {
         color: #f66;
@@ -80,17 +81,12 @@
         ? decodeURIComponent(document.location.hash.slice(1))
         : "examples/bob/main.wgsl"; // you can also do zip files
 
-      // Load the game
-      createGame(cart, canvas, handleError)
-        .then((game) => {
-          // Set page title and info from game metadata
-          document.title = game.title;
-          titleEl.textContent = game.title;
-          infoEl.innerHTML = `Controls: Arrows for DPAD, X/Z/S/A/Q/W/Shift/Enter for A/B/X/Y/L/R/SELECT/START<br/>You can <a href="${cart}">view source</a><br />Made with <a href="https://github.com/notnullgames/wgsleng">wgsleng</a>`;
-        })
-        .catch((err) => {
-          handleError(err.stack || err.message);
-        });
+      const game = await createGame(cart, canvas, handleError);
+      document.title = game.title;
+      titleEl.textContent = game.title;
+      infoEl.innerHTML = `Controls: Arrows for DPAD, X/Z/S/A/Q/W/Shift/Enter for A/B/X/Y/L/R/SELECT/START<br/>You can <a href="${cart}">view source</a><br />Made with <a href="https://github.com/notnullgames/wgsleng">wgsleng</a>`;
+
+      console.log(game);
     </script>
   </body>
 </html>

@@ -1,8 +1,13 @@
 @set_title("Tetris")
-@set_size(320, 400)
+
+// 320x400 * DISPLAY_SCALE
+@set_size(960, 1200)
 
 @import("draw2d.wgsl")
 @import("font.wgsl")
+
+// Display scaling (game renders at 320x400, displayed at 640x800)
+const DISPLAY_SCALE = 3.0;
 
 // Grid settings
 const GRID_WIDTH = 10.0;
@@ -424,6 +429,9 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
 
 @fragment
 fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
+    // Scale coordinates down to game resolution (320x400)
+    let game_coord = vec4f(coord.xy / DISPLAY_SCALE, coord.z, coord.w);
+
     let offset_x = 20.0; // Left padding
     let offset_y = 20.0; // Top padding
 
@@ -431,21 +439,21 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     var color = vec4f(0.05, 0.05, 0.1, 1.0);
 
     // Draw board background
-    if (coord.x >= offset_x && coord.x < offset_x + GRID_WIDTH * CELL_SIZE &&
-        coord.y >= offset_y && coord.y < offset_y + GRID_HEIGHT * CELL_SIZE) {
+    if (game_coord.x >= offset_x && game_coord.x < offset_x + GRID_WIDTH * CELL_SIZE &&
+        game_coord.y >= offset_y && game_coord.y < offset_y + GRID_HEIGHT * CELL_SIZE) {
         color = vec4f(0.1, 0.1, 0.15, 1.0);
 
         // Grid lines
-        let grid_x = (coord.x - offset_x) / CELL_SIZE;
-        let grid_y = (coord.y - offset_y) / CELL_SIZE;
+        let grid_x = (game_coord.x - offset_x) / CELL_SIZE;
+        let grid_y = (game_coord.y - offset_y) / CELL_SIZE;
         if (fract(grid_x) < 0.05 || fract(grid_y) < 0.05) {
             color = blend_over(color, vec4f(0.15, 0.15, 0.2, 1.0));
         }
     }
 
     // Calculate grid cell
-    let cell_x = floor((coord.x - offset_x) / CELL_SIZE);
-    let cell_y = floor((coord.y - offset_y) / CELL_SIZE);
+    let cell_x = floor((game_coord.x - offset_x) / CELL_SIZE);
+    let cell_y = floor((game_coord.y - offset_y) / CELL_SIZE);
 
     // Draw placed pieces on board
     if (cell_x >= 0.0 && cell_x < GRID_WIDTH && cell_y >= 0.0 && cell_y < GRID_HEIGHT) {
@@ -455,7 +463,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
             if (piece_type > 0.5) {
                 let piece_color = get_piece_color(piece_type);
                 color = blend_over(color, draw_rect(
-                    coord.xy,
+                    game_coord.xy,
                     vec2f(offset_x + cell_x * CELL_SIZE + 1.0, offset_y + cell_y * CELL_SIZE + 1.0),
                     vec2f(CELL_SIZE - 2.0),
                     piece_color
@@ -478,7 +486,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
 
                     if (all(vec2f(px, py) == vec2f(cell_x, cell_y))) {
                         color = blend_over(color, draw_rect(
-                            coord.xy,
+                            game_coord.xy,
                             vec2f(offset_x + px * CELL_SIZE + 1.0, offset_y + py * CELL_SIZE + 1.0),
                             vec2f(CELL_SIZE - 2.0),
                             piece_color
@@ -500,7 +508,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
             let idx = y * 4 + x;
             if (preview_shape[idx] > 0.5) {
                 color = blend_over(color, draw_rect(
-                    coord.xy,
+                    game_coord.xy,
                     vec2f(preview_x + f32(x) * 15.0, preview_y + f32(y) * 15.0),
                     vec2f(13.0),
                     preview_color
@@ -514,25 +522,25 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     let score_y = preview_y + 80.0;
 
     // Draw "SCORE" label at smaller size (8x8)
-    color = draw_char(color, coord.xy, 83u, vec2f(score_x, score_y), 8.0); // 'S'
-    color = draw_char(color, coord.xy, 67u, vec2f(score_x + 8.0, score_y), 8.0); // 'C'
-    color = draw_char(color, coord.xy, 79u, vec2f(score_x + 16.0, score_y), 8.0); // 'O'
-    color = draw_char(color, coord.xy, 82u, vec2f(score_x + 24.0, score_y), 8.0); // 'R'
-    color = draw_char(color, coord.xy, 69u, vec2f(score_x + 32.0, score_y), 8.0); // 'E'
+    color = draw_char(color, game_coord.xy, 83u, vec2f(score_x, score_y), 8.0); // 'S'
+    color = draw_char(color, game_coord.xy, 67u, vec2f(score_x + 8.0, score_y), 8.0); // 'C'
+    color = draw_char(color, game_coord.xy, 79u, vec2f(score_x + 16.0, score_y), 8.0); // 'O'
+    color = draw_char(color, game_coord.xy, 82u, vec2f(score_x + 24.0, score_y), 8.0); // 'R'
+    color = draw_char(color, game_coord.xy, 69u, vec2f(score_x + 32.0, score_y), 8.0); // 'E'
 
     // Draw score value (with more spacing)
-    color = draw_number(color, coord.xy, u32(@engine.state.score), vec2f(score_x, score_y + 12.0), 8.0);
+    color = draw_number(color, game_coord.xy, u32(@engine.state.score), vec2f(score_x, score_y + 12.0), 8.0);
 
     // Draw lines text (with more spacing)
     let lines_y = score_y + 32.0;
-    color = draw_char(color, coord.xy, 76u, vec2f(score_x, lines_y), 8.0); // 'L'
-    color = draw_char(color, coord.xy, 73u, vec2f(score_x + 8.0, lines_y), 8.0); // 'I'
-    color = draw_char(color, coord.xy, 78u, vec2f(score_x + 16.0, lines_y), 8.0); // 'N'
-    color = draw_char(color, coord.xy, 69u, vec2f(score_x + 24.0, lines_y), 8.0); // 'E'
-    color = draw_char(color, coord.xy, 83u, vec2f(score_x + 32.0, lines_y), 8.0); // 'S'
+    color = draw_char(color, game_coord.xy, 76u, vec2f(score_x, lines_y), 8.0); // 'L'
+    color = draw_char(color, game_coord.xy, 73u, vec2f(score_x + 8.0, lines_y), 8.0); // 'I'
+    color = draw_char(color, game_coord.xy, 78u, vec2f(score_x + 16.0, lines_y), 8.0); // 'N'
+    color = draw_char(color, game_coord.xy, 69u, vec2f(score_x + 24.0, lines_y), 8.0); // 'E'
+    color = draw_char(color, game_coord.xy, 83u, vec2f(score_x + 32.0, lines_y), 8.0); // 'S'
 
     // Draw lines value (with more spacing)
-    color = draw_number(color, coord.xy, u32(@engine.state.lines), vec2f(score_x, lines_y + 12.0), 8.0);
+    color = draw_number(color, game_coord.xy, u32(@engine.state.lines), vec2f(score_x, lines_y + 12.0), 8.0);
 
     // Game over overlay
     if (@engine.state.game_over > 0.5) {

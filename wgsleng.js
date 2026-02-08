@@ -646,6 +646,9 @@ class WGSLGameEngine {
     const processedCode = result.code;
     const metadata = result.metadata;
 
+    // output processed shader
+    console.log(result.code);
+
     // Set metadata
     this.gameTitle = metadata.title;
     this.canvas.width = metadata.width;
