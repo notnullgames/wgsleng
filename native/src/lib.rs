@@ -170,6 +170,15 @@ impl PreprocessorState {
             }
         }
 
+        // Find all @texture_index() references (also load these textures)
+        let texture_index_re = Regex::new(r#"@texture_index\("([^"]+)"\)"#)?;
+        for cap in texture_index_re.captures_iter(&source) {
+            let texture_file = cap[1].to_string();
+            if !metadata.textures.contains(&texture_file) {
+                metadata.textures.push(texture_file);
+            }
+        }
+
         // Find all @model() references
         let model_re = Regex::new(r#"@model\("([^"]+)"\)"#)?;
         for cap in model_re.captures_iter(&source) {
@@ -338,6 +347,46 @@ impl PreprocessorState {
             let escaped = texture.replace(".", "\\.");
             let texture_re = Regex::new(&format!(r#"@texture\("{}"\)"#, escaped))?;
             source = texture_re.replace_all(&source, &format!("_texture_{}", i)).to_string();
+        }
+
+        // Replace @texture_index() with texture binding number
+        for (i, texture) in metadata.textures.iter().enumerate() {
+            let escaped = texture.replace(".", "\\.");
+            let texture_index_re = Regex::new(&format!(r#"@texture_index\("{}"\)"#, escaped))?;
+            source = texture_index_re.replace_all(&source, &format!("{}u", i)).to_string();
+        }
+
+        // Replace @str() with fixed-size array of character codes (padded with zeros)
+        let str_re = Regex::new(r#"@str\("((?:[^"\\]|\\.)*)"\)"#)?;
+        let str_matches: Vec<(String, String)> = str_re.captures_iter(&source)
+            .map(|cap| (cap.get(0).unwrap().as_str().to_string(), cap[1].to_string()))
+            .collect();
+
+        for (full_match, string) in str_matches {
+            // Unescape the string
+            let unescaped = string
+                .replace("\\n", "\n")
+                .replace("\\r", "\r")
+                .replace("\\t", "\t")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\");
+
+            // Convert to character codes
+            let mut char_codes: Vec<u32> = unescaped.chars().map(|c| c as u32).collect();
+
+            // Pad with zeros to 128
+            while char_codes.len() < 128 {
+                char_codes.push(0);
+            }
+
+            // Create array literal
+            let codes_str = char_codes.iter()
+                .map(|c| format!("{}u", c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let replacement = format!("array<u32, 128>({})", codes_str);
+
+            source = source.replace(&full_match, &replacement);
         }
 
         // Replace @model() - Note: This creates a struct-like accessor

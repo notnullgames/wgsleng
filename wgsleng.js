@@ -318,6 +318,14 @@ class WGSLGameEngine {
       }
     }
 
+    // Find all @texture_index() references (also need to load these textures)
+    const textureIndexMatches = source.matchAll(/@texture_index\("([^"]+)"\)/g);
+    for (const match of textureIndexMatches) {
+      if (!metadata.textures.includes(match[1])) {
+        metadata.textures.push(match[1]);
+      }
+    }
+
     // Find all @model() references
     const modelMatches = source.matchAll(/@model\("([^"]+)"\)/g);
     metadata.models = [];
@@ -519,6 +527,15 @@ class WGSLGameEngine {
       source = source.replace(regex, `_texture_${i}`);
     });
 
+    // Replace @texture_index() with the texture binding number (as u32)
+    metadata.textures.forEach((texName, i) => {
+      const regex = new RegExp(
+        `@texture_index\\("${texName.replace(".", "\\.")}"\\)`,
+        "g",
+      );
+      source = source.replace(regex, `${i}u`);
+    });
+
     // Replace @model() references
     if (metadata.models) {
       metadata.models.forEach((modelName, i) => {
@@ -542,6 +559,29 @@ class WGSLGameEngine {
           `/* @model("${modelName}") - use .positions or .normals */`,
         );
       });
+    }
+
+    // Replace @str() with fixed-size array of character codes (padded with zeros)
+    // We use a fixed size of 128 to handle most strings
+    const MAX_STRING_LENGTH = 128;
+    // Match @str("...") including escaped characters
+    const strMatches = [...source.matchAll(/@str\("((?:[^"\\]|\\.)*)"\)/g)];
+    for (const match of strMatches) {
+      // Unescape the string properly
+      const str = match[1]
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\r')
+        .replace(/\\t/g, '\t')
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\');
+
+      const charCodes = Array.from(str).map(c => c.charCodeAt(0));
+      // Pad with zeros up to MAX_STRING_LENGTH
+      while (charCodes.length < MAX_STRING_LENGTH) {
+        charCodes.push(0);
+      }
+      const replacement = `array<u32, ${MAX_STRING_LENGTH}>(${charCodes.map(c => `${c}u`).join(', ')})`;
+      source = source.replace(match[0], replacement);
     }
 
     return {
