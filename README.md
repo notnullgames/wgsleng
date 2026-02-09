@@ -76,6 +76,25 @@ Build example zips:
 npm run game
 ```
 
+### Using Tiled Maps
+
+Create tile-based games using [Tiled](https://www.mapeditor.org/):
+
+1. Create your map in Tiled and save as JSON (`.tmj`)
+2. Convert to wgsleng format:
+   ```bash
+   pip install Pillow
+   python3 tools/tiled_to_wgsl.py path/to/map.tmj
+   ```
+3. Import in your game:
+   ```wgsl
+   @import("map.wgsl")
+   ```
+
+See `examples/rpg/` for a complete example with collision detection.
+
+The converter creates efficient texture-based maps (tile IDs encoded as pixels) which are much faster than array-based storage. See `tools/README.md` for details.
+
 ### image-only output
 
 You might find it helpful to render WGSL to images (for LLM-comparison and things.) You can do that like this:
