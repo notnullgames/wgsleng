@@ -10,6 +10,7 @@
     "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg",
     "game:bunny": "rm -f bunny.zip && cd examples/bunny && zip ../../bunny.zip *.wgsl *.obj",
     "game:cubespin": "rm -f cubespin.zip && cd examples/cubespin && zip ../../cubespin.zip *.wgsl",
+    "game:hello": "rm -f hello.zip && cd examples/hello && zip ../../hello.zip *.wgsl *.png",
     "game:input": "rm -f input.zip && cd examples/input && zip ../../input.zip *.wgsl",
     "game:logo": "rm -f logo.zip && cd examples/logo && zip ../../logo.zip *.wgsl",
     "game:raymarch": "rm -f raymarch.zip && cd examples/raymarch && zip ../../raymarch.zip *.wgsl",
