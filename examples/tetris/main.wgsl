@@ -504,8 +504,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     }
 
     // FPS display (top-left corner)
-    // color = blend_over(color, font_text(game_coord.xy, vec2f(5.0, 5.0), @str("FPS:"), 1.0, @texture("font8x8.png"), font8));
-    // color = blend_over(color, font_fps(game_coord.xy, vec2f(35.0, 5.0), @engine.delta_time, 1.0, @texture("font8x8.png"), font8));
+    // color = blend_over(color, font_fps(game_coord.xy, vec2f(5.0, 5.0), @engine.delta_time, 1.0, @texture("font8x8.png"), font8));
 
     // Sidebar: Score and stats
     color = blend_over(color, font_text(game_coord.xy, vec2f(sidebar_x, 120.0), @str("SCORE:"), 1.0, @texture("font8x8.png"), font8));

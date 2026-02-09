@@ -149,8 +149,9 @@ let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0
 
 ## asset credits
 
-- fonts are from [ianhan/BitmapFonts](https://github.com/ianhan/BitmapFonts/blob/main/previews.md)
+- font is from [this 8x8](https://opengameart.org/content/8x8-ascii-bitmap-font-with-c-source)
 - Bob Ross pixel-art is from [ravenist](https://www.pixilart.com/ravenist)
+- tiles are from [lo-bit](https://finalbossblues.itch.io/lo-bit-pack)
 
 ## License
 
