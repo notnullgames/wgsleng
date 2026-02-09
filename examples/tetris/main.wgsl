@@ -6,6 +6,16 @@
 @import("draw2d.wgsl")
 @import("font.wgsl")
 
+// Define font (texture must be passed separately)
+const font8 = Font(
+    @str("!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_ `abcdefghijklmnopqrstuvwxyz{|}~"),
+    8.0,   // cell_w
+    8.0,   // cell_h
+    16u,   // chars_per_row
+    128.0, // tex_w
+    48.0   // tex_h
+);
+
 // Display scaling (game renders at 320x400, displayed at 640x800)
 const DISPLAY_SCALE = 3.0;
 
@@ -132,41 +142,6 @@ fn get_piece_color(piece_type: f32) -> vec4f {
     if (piece_type == PIECE_J) { return COLOR_BLUE; }
     if (piece_type == PIECE_L) { return COLOR_ORANGE; }
     return COLOR_GRAY;
-}
-
-// Wrapper functions for font rendering (handles texture sampling)
-fn draw_char(color: vec4f, coord: vec2f, char_code: u32, pos: vec2f, size: f32) -> vec4f {
-    let uv_data = get_char_uv(coord, char_code, pos, size);
-    if (uv_data.z < 0.5) { // Not within bounds
-        return color;
-    }
-
-    let glyph = textureSampleLevel(@texture("16X16-F6.png"), @engine.sampler, uv_data.xy, 0.0);
-    // Font is white-on-black, use brightness to determine if pixel is character or background
-    let brightness = (glyph.r + glyph.g + glyph.b) / 3.0;
-    if (brightness > 0.5) {
-        return vec4f(1.0, 1.0, 1.0, 1.0); // White text
-    }
-    return color;
-}
-
-fn draw_digit(color: vec4f, coord: vec2f, digit: u32, pos: vec2f, size: f32) -> vec4f {
-    return draw_char(color, coord, 48u + digit, pos, size);
-}
-
-fn draw_number(color: vec4f, coord: vec2f, number: u32, pos: vec2f, size: f32) -> vec4f {
-    let uv_data = get_number_uv(coord, number, pos, size);
-    if (uv_data.z < 0.5) { // Not within bounds
-        return color;
-    }
-
-    let glyph = textureSampleLevel(@texture("16X16-F6.png"), @engine.sampler, uv_data.xy, 0.0);
-    // Font is white-on-black, so check brightness instead of alpha
-    let brightness = (glyph.r + glyph.g + glyph.b) / 3.0;
-    if (brightness > 0.5) {
-        return vec4f(1.0, 1.0, 1.0, 1.0); // White text
-    }
-    return color;
 }
 
 // Better random number generator with hash mixing
@@ -405,8 +380,20 @@ fn update() {
                 let cleared = clear_lines(&state);
                 if (cleared > 0.5) {
                     state.lines += cleared;
-                    // Scoring: 100 * cleared * level
-                    state.score += 100.0 * cleared * state.level;
+
+                    // Scoring based on lines cleared at once
+                    var points = 0.0;
+                    if (cleared == 1.0) {
+                        points = 100.0;  // Single
+                    } else if (cleared == 2.0) {
+                        points = 300.0;  // Double
+                    } else if (cleared == 3.0) {
+                        points = 500.0;  // Triple
+                    } else if (cleared >= 4.0) {
+                        points = 800.0;  // Tetris
+                    }
+                    state.score += points * state.level;
+
                     // Level up every 10 lines
                     state.level = floor(state.lines / 10.0) + 1.0;
                 }
@@ -432,28 +419,30 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     // Scale coordinates down to game resolution (320x400)
     let game_coord = vec4f(coord.xy / DISPLAY_SCALE, coord.z, coord.w);
 
-    let offset_x = 20.0; // Left padding
-    let offset_y = 20.0; // Top padding
+    // Layout constants
+    let board_x = 20.0;
+    let board_y = 20.0;
+    let sidebar_x = board_x + GRID_WIDTH * CELL_SIZE + 20.0;
 
     // Background
     var color = vec4f(0.05, 0.05, 0.1, 1.0);
 
-    // Draw board background
-    if (game_coord.x >= offset_x && game_coord.x < offset_x + GRID_WIDTH * CELL_SIZE &&
-        game_coord.y >= offset_y && game_coord.y < offset_y + GRID_HEIGHT * CELL_SIZE) {
+    // Draw board background with grid
+    if (game_coord.x >= board_x && game_coord.x < board_x + GRID_WIDTH * CELL_SIZE &&
+        game_coord.y >= board_y && game_coord.y < board_y + GRID_HEIGHT * CELL_SIZE) {
         color = vec4f(0.1, 0.1, 0.15, 1.0);
 
         // Grid lines
-        let grid_x = (game_coord.x - offset_x) / CELL_SIZE;
-        let grid_y = (game_coord.y - offset_y) / CELL_SIZE;
+        let grid_x = (game_coord.x - board_x) / CELL_SIZE;
+        let grid_y = (game_coord.y - board_y) / CELL_SIZE;
         if (fract(grid_x) < 0.05 || fract(grid_y) < 0.05) {
             color = blend_over(color, vec4f(0.15, 0.15, 0.2, 1.0));
         }
     }
 
-    // Calculate grid cell
-    let cell_x = floor((game_coord.x - offset_x) / CELL_SIZE);
-    let cell_y = floor((game_coord.y - offset_y) / CELL_SIZE);
+    // Calculate grid cell for piece rendering
+    let cell_x = floor((game_coord.x - board_x) / CELL_SIZE);
+    let cell_y = floor((game_coord.y - board_y) / CELL_SIZE);
 
     // Draw placed pieces on board
     if (cell_x >= 0.0 && cell_x < GRID_WIDTH && cell_y >= 0.0 && cell_y < GRID_HEIGHT) {
@@ -461,33 +450,31 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
         if (board_idx < BOARD_SIZE) {
             let piece_type = @engine.state.board[board_idx];
             if (piece_type > 0.5) {
-                let piece_color = get_piece_color(piece_type);
                 color = blend_over(color, draw_rect(
                     game_coord.xy,
-                    vec2f(offset_x + cell_x * CELL_SIZE + 1.0, offset_y + cell_y * CELL_SIZE + 1.0),
+                    vec2f(board_x + cell_x * CELL_SIZE + 1.0, board_y + cell_y * CELL_SIZE + 1.0),
                     vec2f(CELL_SIZE - 2.0),
-                    piece_color
+                    get_piece_color(piece_type)
                 ));
             }
         }
     }
 
-    // Draw current piece
+    // Draw current falling piece
     if (@engine.state.game_over < 0.5) {
         let shape = get_piece_shape(@engine.state.current_piece, @engine.state.current_rotation);
         let piece_color = get_piece_color(@engine.state.current_piece);
 
         for (var y = 0; y < 4; y++) {
             for (var x = 0; x < 4; x++) {
-                let idx = y * 4 + x;
-                if (shape[idx] > 0.5) {
+                if (shape[y * 4 + x] > 0.5) {
                     let px = @engine.state.current_pos.x + f32(x);
                     let py = @engine.state.current_pos.y + f32(y);
 
                     if (all(vec2f(px, py) == vec2f(cell_x, cell_y))) {
                         color = blend_over(color, draw_rect(
                             game_coord.xy,
-                            vec2f(offset_x + px * CELL_SIZE + 1.0, offset_y + py * CELL_SIZE + 1.0),
+                            vec2f(board_x + px * CELL_SIZE + 1.0, board_y + py * CELL_SIZE + 1.0),
                             vec2f(CELL_SIZE - 2.0),
                             piece_color
                         ));
@@ -497,19 +484,18 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
         }
     }
 
-    // Draw next piece preview
-    let preview_x = offset_x + GRID_WIDTH * CELL_SIZE + 20.0;
-    let preview_y = 20.0;
+    // Sidebar: Next piece preview
     let preview_shape = get_piece_shape(@engine.state.next_piece, 0.0);
     let preview_color = get_piece_color(@engine.state.next_piece);
 
+    color = blend_over(color, font_text(game_coord.xy, vec2f(sidebar_x, 20.0), @str("NEXT"), 1.0, @texture("font8x8.png"), font8));
+
     for (var y = 0; y < 4; y++) {
         for (var x = 0; x < 4; x++) {
-            let idx = y * 4 + x;
-            if (preview_shape[idx] > 0.5) {
+            if (preview_shape[y * 4 + x] > 0.5) {
                 color = blend_over(color, draw_rect(
                     game_coord.xy,
-                    vec2f(preview_x + f32(x) * 15.0, preview_y + f32(y) * 15.0),
+                    vec2f(sidebar_x + f32(x) * 15.0, 35.0 + f32(y) * 15.0),
                     vec2f(13.0),
                     preview_color
                 ));
@@ -517,35 +503,25 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
         }
     }
 
-    // Draw score and lines
-    let score_x = preview_x;
-    let score_y = preview_y + 80.0;
+    // FPS display (top-left corner)
+    color = blend_over(color, font_text(game_coord.xy, vec2f(5.0, 5.0), @str("FPS:"), 1.0, @texture("font8x8.png"), font8));
+    color = blend_over(color, font_fps(game_coord.xy, vec2f(35.0, 5.0), @engine.delta_time, 1.0, @texture("font8x8.png"), font8));
 
-    // Draw "SCORE" label at smaller size (8x8)
-    color = draw_char(color, game_coord.xy, 83u, vec2f(score_x, score_y), 8.0); // 'S'
-    color = draw_char(color, game_coord.xy, 67u, vec2f(score_x + 8.0, score_y), 8.0); // 'C'
-    color = draw_char(color, game_coord.xy, 79u, vec2f(score_x + 16.0, score_y), 8.0); // 'O'
-    color = draw_char(color, game_coord.xy, 82u, vec2f(score_x + 24.0, score_y), 8.0); // 'R'
-    color = draw_char(color, game_coord.xy, 69u, vec2f(score_x + 32.0, score_y), 8.0); // 'E'
+    // Sidebar: Score and stats
+    color = blend_over(color, font_text(game_coord.xy, vec2f(sidebar_x, 120.0), @str("SCORE:"), 1.0, @texture("font8x8.png"), font8));
+    color = blend_over(color, font_number(game_coord.xy, vec2f(sidebar_x + 48.0, 120.0), u32(@engine.state.score), 1.0, @texture("font8x8.png"), font8));
 
-    // Draw score value (with more spacing)
-    color = draw_number(color, game_coord.xy, u32(@engine.state.score), vec2f(score_x, score_y + 12.0), 8.0);
+    color = blend_over(color, font_text(game_coord.xy, vec2f(sidebar_x, 132.0), @str("LINES:"), 1.0, @texture("font8x8.png"), font8));
+    color = blend_over(color, font_number(game_coord.xy, vec2f(sidebar_x + 48.0, 132.0), u32(@engine.state.lines), 1.0, @texture("font8x8.png"), font8));
 
-    // Draw lines text (with more spacing)
-    let lines_y = score_y + 32.0;
-    color = draw_char(color, game_coord.xy, 76u, vec2f(score_x, lines_y), 8.0); // 'L'
-    color = draw_char(color, game_coord.xy, 73u, vec2f(score_x + 8.0, lines_y), 8.0); // 'I'
-    color = draw_char(color, game_coord.xy, 78u, vec2f(score_x + 16.0, lines_y), 8.0); // 'N'
-    color = draw_char(color, game_coord.xy, 69u, vec2f(score_x + 24.0, lines_y), 8.0); // 'E'
-    color = draw_char(color, game_coord.xy, 83u, vec2f(score_x + 32.0, lines_y), 8.0); // 'S'
-
-    // Draw lines value (with more spacing)
-    color = draw_number(color, game_coord.xy, u32(@engine.state.lines), vec2f(score_x, lines_y + 12.0), 8.0);
+    color = blend_over(color, font_text(game_coord.xy, vec2f(sidebar_x, 144.0), @str("LEVEL:"), 1.0, @texture("font8x8.png"), font8));
+    color = blend_over(color, font_number(game_coord.xy, vec2f(sidebar_x + 48.0, 144.0), u32(@engine.state.level), 1.0, @texture("font8x8.png"), font8));
 
     // Game over overlay
     if (@engine.state.game_over > 0.5) {
-        // Red overlay
         color = blend_over(color, vec4f(0.5, 0.0, 0.0, 0.3));
+        color = blend_over(color, font_text(game_coord.xy, vec2f(board_x + 10.0, 180.0), @str("GAME OVER"), 2.0, @texture("font8x8.png"), font8));
+        color = blend_over(color, font_text(game_coord.xy, vec2f(board_x + 10.0, 220.0), @str("PRESS START"), 1.0, @texture("font8x8.png"), font8));
     }
 
     return color;
