@@ -13,6 +13,7 @@
     "game:input": "rm -f input.zip && cd examples/input && zip ../../input.zip *.wgsl",
     "game:logo": "rm -f logo.zip && cd examples/logo && zip ../../logo.zip *.wgsl",
     "game:raymarch": "rm -f raymarch.zip && cd examples/raymarch && zip ../../raymarch.zip *.wgsl",
+    "game:rpg": "rm -f rpg.zip && cd examples/rpg && zip ../../rpg.zip *.wgsl map/*.png map/*.wgsl",
     "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl",
     "game:tetris": "rm -f tetris.zip && cd examples/tetris && zip ../../tetris.zip *.wgsl *.png",
     "game": "npx -y npm-run-all -p game:*"
