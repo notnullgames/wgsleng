@@ -18,6 +18,7 @@
     "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl",
     "game:tetris": "rm -f tetris.zip && cd examples/tetris && zip ../../tetris.zip *.wgsl *.png",
     "game:osc": "rm -f osc.zip && cd examples/osc && zip ../../osc.zip *.wgsl",
+    "game:video": "rm -f video.zip && cd examples/video && zip ../../video.zip *.wgsl *.mp4",
     "game": "npx -y npm-run-all -p game:*"
   },
   "author": "konsumer",

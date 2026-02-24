@@ -1230,8 +1230,8 @@ impl State {
                         let offset = self.buffer_offsets.osc_floats + (i * 4) as u64;
                         self.queue.write_buffer(&self.engine_buffer, offset, &value.to_le_bytes());
                     }
-                    Some(i) => eprintln!("[osc] /u/{} index {} out of range (max {})", name, i, OSC_FLOAT_COUNT - 1),
-                    None => eprintln!("[osc] /u/{} not declared with @osc() in shader (use @osc(\"{}\") or an index)", name, name),
+                    Some(i) => log::warn!("[osc] /u/{} index {} out of range (max {})", name, i, OSC_FLOAT_COUNT - 1),
+                    None => log::warn!("[osc] /u/{} not declared with @osc(\"{}\") in shader", name, name),
                 }
             }
             OscMessage::SetSpectrum(vals) => {
@@ -1915,6 +1915,7 @@ impl ApplicationHandler for App {
 
 fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage) {
     let addr = msg.addr.as_str();
+    log::debug!("[osc] {} {:?}", addr, msg.args);
 
     // /u/name value  or  /u/N value
     if let Some(name) = addr.strip_prefix("/u/") {
@@ -1971,7 +1972,20 @@ fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage)
     // /reload
     if addr == "/reload" {
         let _ = tx.send(OscMessage::Reload);
+        return;
     }
+
+    // Unknown path — warn once per unique address so high-rate senders don't spam
+    thread_local! {
+        static WARNED: std::cell::RefCell<std::collections::HashSet<String>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+    }
+    WARNED.with(|w| {
+        if w.borrow_mut().insert(addr.to_string()) {
+            log::warn!("[osc] unknown path '{}' — expected /u/<name>, /spectrum, /shader, or /reload", addr);
+            log::warn!("[osc] (set RUST_LOG=debug to see all received messages)");
+        }
+    });
 }
 
 fn start_osc_listener(port: u16) -> Option<std::sync::mpsc::Receiver<OscMessage>> {
@@ -2019,7 +2033,7 @@ fn start_osc_listener(port: u16) -> Option<std::sync::mpsc::Receiver<OscMessage>
 }
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let args = Args::parse();
 
     // Determine entry file
