@@ -183,6 +183,14 @@ let cam = textureSample(@camera(0), @engine.sampler, uv);
 
 In addition to being a game-engine, I wanted to control shaders from OSC messages (so I could link up to puredata.) I use [plugdata](https://plugdata.org/), which is a fork that has a nicer GUI, and you can even make native code using puredata! (subset of vanilla, limited, but really cool.)
 
+To start listening on port 9000:
+
+```sh
+./native/target/release/wgsleng examples/video --osc-port 9000
+```
+
+TODO
+
 ## asset credits
 
 - font is from [this 8x8](https://opengameart.org/content/8x8-ascii-bitmap-font-with-c-source)

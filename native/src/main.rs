@@ -23,6 +23,8 @@ enum OscMessage {
     SetSpectrum(Vec<f32>),
     /// /spectrum/N value
     SetSpectrumBin(usize, f32),
+    /// /vid/<filename>/position 0.0-1.0
+    SetVideoPosition(String, f32),
     /// /shader filename.wgsl
     LoadShader(String),
     /// /reload
@@ -55,13 +57,6 @@ enum VideoSourceRuntime {
         height: u32,
         current_frame: usize,
         frame_elapsed_ms: f32,
-    },
-    /// Decoded via `ffmpeg` CLI subprocess — works for MP4, WebM, MOV, etc.
-    FfmpegStream {
-        latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
-        width: u32,
-        height: u32,
-        stop: Arc<std::sync::atomic::AtomicBool>,
     },
     Black(u32, u32),
 }
@@ -102,14 +97,12 @@ fn load_gif_source(data: &[u8]) -> Result<(VideoSourceRuntime, u32, u32), Box<dy
 
 /// Decode an arbitrary video file using the system `ffmpeg` CLI.
 ///
-/// Spawns `ffprobe` to get dimensions, then `ffmpeg` to stream raw RGBA frames
-/// in a background thread.  Works for MP4, WebM, MOV, MKV — anything ffmpeg
-/// supports.  Returns `Black` if ffmpeg is not installed.
+/// Pre-decodes all frames into memory for instant seeking.
+/// Works for MP4, WebM, MOV, MKV — anything ffmpeg supports.
 fn open_ffmpeg_video(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32, u32) {
     use std::process::{Command, Stdio};
     use std::io::Read;
 
-    // Write the video bytes to a temp file so ffmpeg can read them
     let ext = std::path::Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -121,18 +114,14 @@ fn open_ffmpeg_video(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32,
         return (VideoSourceRuntime::Black(1, 1), 1, 1);
     }
 
-    // Use ffprobe to get width and height
+    // Get dimensions and frame rate via ffprobe
     let probe = Command::new("ffprobe")
-        .args([
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "csv=p=0",
-            tmp_path.to_str().unwrap(),
-        ])
+        .args(["-v", "error", "-select_streams", "v:0",
+               "-show_entries", "stream=width,height,r_frame_rate", "-of", "csv=p=0",
+               tmp_path.to_str().unwrap()])
         .output();
 
-    let (width, height) = match probe {
+    let (width, height, fps) = match probe {
         Err(e) => {
             eprintln!("[video] ffprobe not found ({}), using black for '{}'", e, filename);
             let _ = std::fs::remove_file(&tmp_path);
@@ -141,80 +130,79 @@ fn open_ffmpeg_video(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32,
         Ok(out) => {
             let s = String::from_utf8_lossy(&out.stdout);
             let parts: Vec<&str> = s.trim().split(',').collect();
-            if parts.len() < 2 {
+            if parts.len() < 3 {
                 eprintln!("[video] ffprobe gave unexpected output for '{}': {:?}", filename, s);
                 let _ = std::fs::remove_file(&tmp_path);
                 return (VideoSourceRuntime::Black(1, 1), 1, 1);
             }
             let w: u32 = parts[0].trim().parse().unwrap_or(1);
             let h: u32 = parts[1].trim().parse().unwrap_or(1);
-            (w, h)
+            // r_frame_rate is like "30000/1001" or "30/1"
+            let fps: f32 = {
+                let fr = parts[2].trim();
+                if let Some((n, d)) = fr.split_once('/') {
+                    let num: f32 = n.parse().unwrap_or(30.0);
+                    let den: f32 = d.parse().unwrap_or(1.0);
+                    if den == 0.0 { 30.0 } else { num / den }
+                } else {
+                    fr.parse().unwrap_or(30.0)
+                }
+            };
+            (w, h, fps)
         }
     };
 
-    let latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let frame_clone = Arc::clone(&latest_frame);
-    let stop_clone = Arc::clone(&stop);
-    let tmp_path_clone = tmp_path.clone();
+    let delay_ms = ((1000.0 / fps.max(1.0)) as u32).max(1);
     let frame_bytes = (width * height * 4) as usize;
 
-    std::thread::spawn(move || {
-        // Spawn ffmpeg to pipe raw RGBA frames to stdout, looping forever
-        let mut child = match Command::new("ffmpeg")
-            .args([
-                "-stream_loop", "-1",
-                "-re",  // read at native frame rate (prevents faster-than-realtime decode)
-                "-i", tmp_path_clone.to_str().unwrap(),
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-vcodec", "rawvideo",
-                "pipe:1",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[video] failed to spawn ffmpeg: {}", e);
-                let _ = std::fs::remove_file(&tmp_path_clone);
-                return;
-            }
-        };
+    // Decode all frames as fast as possible (no -re)
+    let decode = Command::new("ffmpeg")
+        .args([
+            "-i", tmp_path.to_str().unwrap(),
+            "-f", "rawvideo", "-pix_fmt", "rgba", "-vcodec", "rawvideo",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
 
-        let mut stdout = child.stdout.take().unwrap();
-        let mut buf = vec![0u8; frame_bytes];
+    let mut frames_vec: Vec<(Vec<u8>, u32)> = Vec::new();
 
-        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-            let mut total = 0;
-            while total < frame_bytes {
-                match stdout.read(&mut buf[total..]) {
-                    Ok(0) => {
-                        // EOF — ffmpeg finished (shouldn't happen with -stream_loop -1)
-                        let _ = child.kill();
-                        let _ = std::fs::remove_file(&tmp_path_clone);
-                        return;
-                    }
-                    Ok(n) => total += n,
-                    Err(_) => {
-                        let _ = child.kill();
-                        let _ = std::fs::remove_file(&tmp_path_clone);
-                        return;
+    match decode {
+        Err(e) => {
+            eprintln!("[video] ffmpeg not found ({}), using black for '{}'", e, filename);
+            let _ = std::fs::remove_file(&tmp_path);
+            return (VideoSourceRuntime::Black(1, 1), 1, 1);
+        }
+        Ok(mut child) => {
+            let mut stdout = child.stdout.take().unwrap();
+            let mut buf = vec![0u8; frame_bytes];
+            loop {
+                let mut total = 0;
+                let mut eof = false;
+                while total < frame_bytes {
+                    match stdout.read(&mut buf[total..]) {
+                        Ok(0) => { eof = true; break; }
+                        Ok(n) => total += n,
+                        Err(_) => { eof = true; break; }
                     }
                 }
+                if eof || total < frame_bytes { break; }
+                frames_vec.push((buf.clone(), delay_ms));
             }
-            if let Ok(mut guard) = frame_clone.lock() {
-                *guard = Some(buf.clone());
-            }
+            let _ = child.wait();
         }
+    }
 
-        let _ = child.kill();
-        let _ = std::fs::remove_file(&tmp_path_clone);
-    });
+    let _ = std::fs::remove_file(&tmp_path);
 
-    eprintln!("[video] streaming '{}' via ffmpeg ({}x{})", filename, width, height);
-    (VideoSourceRuntime::FfmpegStream { latest_frame, width, height, stop }, width, height)
+    if frames_vec.is_empty() {
+        eprintln!("[video] no frames decoded for '{}'", filename);
+        return (VideoSourceRuntime::Black(width, height), width, height);
+    }
+
+    eprintln!("[video] pre-decoded '{}' ({} frames, {}x{}, {:.1}fps)", filename, frames_vec.len(), width, height, fps);
+    (VideoSourceRuntime::Gif { frames: frames_vec, width, height, current_frame: 0, frame_elapsed_ms: 0.0 }, width, height)
 }
 
 fn load_video_source(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32, u32) {
@@ -314,6 +302,7 @@ struct State {
     // Dynamic video textures
     video_textures: Vec<wgpu::Texture>,
     video_sources: Vec<VideoSourceRuntime>,
+    video_filenames: Vec<String>,
     // Dynamic camera textures
     camera_textures: Vec<wgpu::Texture>,
     camera_sources: Vec<CameraSourceRuntime>,
@@ -518,8 +507,6 @@ impl State {
             let (init_data, vid_w, vid_h) = match &source {
                 VideoSourceRuntime::Gif { frames, width, height, current_frame, .. } =>
                     (frames[*current_frame].0.clone(), *width, *height),
-                VideoSourceRuntime::FfmpegStream { width, height, .. } =>
-                    (vec![0u8; (*width * *height * 4) as usize], *width, *height),
                 VideoSourceRuntime::Black(w, h) =>
                     (vec![0u8; (*w * *h * 4) as usize], *w, *h),
             };
@@ -967,6 +954,7 @@ impl State {
             osc_name_map: metadata.osc_params.iter().cloned().zip(0..).collect(),
             video_textures,
             video_sources,
+            video_filenames: metadata.videos.clone(),
             camera_textures,
             camera_sources,
         })
@@ -1038,11 +1026,6 @@ impl State {
                     } else {
                         None
                     }
-                }
-                VideoSourceRuntime::FfmpegStream { latest_frame, width, height, .. } => {
-                    latest_frame.try_lock().ok()
-                        .and_then(|mut g| g.take())
-                        .map(|data| (data, *width, *height))
                 }
                 VideoSourceRuntime::Black(_, _) => None,
             };
@@ -1220,7 +1203,7 @@ impl State {
     }
 
     /// Apply an OSC message by writing directly into the engine buffer.
-    fn apply_osc_message(&self, msg: &OscMessage) {
+    fn apply_osc_message(&mut self, msg: &OscMessage) {
         match msg {
             OscMessage::SetFloat(name, value) => {
                 // Try name lookup first, then parse as numeric index
@@ -1245,6 +1228,32 @@ impl State {
                     self.queue.write_buffer(&self.engine_buffer, offset, &value.to_le_bytes());
                 } else {
                     eprintln!("[osc] /spectrum/{} out of range (max {})", idx, SPECTRUM_SIZE - 1);
+                }
+            }
+            OscMessage::SetVideoPosition(filename, position) => {
+                if let Some(idx) = self.video_filenames.iter().position(|f| f == filename) {
+                    // Gather what we need (may clone frame data for GIF) before touching queue
+                    let gif_frame: Option<(Vec<u8>, u32, u32)> = match &mut self.video_sources[idx] {
+                        VideoSourceRuntime::Gif { frames, current_frame, frame_elapsed_ms, width, height } => {
+                            let new_frame = ((*position * frames.len() as f32) as usize)
+                                .min(frames.len().saturating_sub(1));
+                            *current_frame = new_frame;
+                            *frame_elapsed_ms = 0.0;
+                            Some((frames[new_frame].0.clone(), *width, *height))
+                        }
+                        VideoSourceRuntime::Black(_, _) => None,
+                    };
+                    // Upload the new GIF frame immediately so the seek is visible this frame
+                    if let Some((data, w, h)) = gif_frame {
+                        self.queue.write_texture(
+                            wgpu::ImageCopyTexture { texture: &self.video_textures[idx], mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                            &data,
+                            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                        );
+                    }
+                } else {
+                    log::warn!("[osc] /vid/{}/position: no video named '{}' loaded", filename, filename);
                 }
             }
             // LoadShader and Reload are handled at the App level
@@ -1294,12 +1303,6 @@ impl State {
 
     /// Hot-reload: re-preprocess shader, rebuild pipelines and textures, preserve GameState.
     fn reload(&mut self, game_path: &str, entry_file: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Signal ffmpeg video threads to stop before rebuilding
-        for source in &self.video_sources {
-            if let VideoSourceRuntime::FfmpegStream { stop, .. } = source {
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
 
         // Signal camera threads to stop before rebuilding
         #[cfg(feature = "camera")]
@@ -1405,8 +1408,6 @@ impl State {
             let (init_data, vid_w, vid_h) = match &source {
                 VideoSourceRuntime::Gif { frames, width, height, current_frame, .. } =>
                     (frames[*current_frame].0.clone(), *width, *height),
-                VideoSourceRuntime::FfmpegStream { width, height, .. } =>
-                    (vec![0u8; (*width * *height * 4) as usize], *width, *height),
                 VideoSourceRuntime::Black(w, h) =>
                     (vec![0u8; (*w * *h * 4) as usize], *w, *h),
             };
@@ -1797,6 +1798,7 @@ impl State {
         self.osc_name_map = metadata.osc_params.iter().cloned().zip(0..).collect();
         self.video_textures = new_video_textures;
         self.video_sources = new_video_sources;
+        self.video_filenames = metadata.videos.clone();
         self.camera_textures = new_camera_textures;
         self.camera_sources = new_camera_sources;
 
@@ -1885,7 +1887,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     ref other => {
-                        if let Some(ref state) = self.state {
+                        if let Some(ref mut state) = self.state {
                             state.apply_osc_message(other);
                         }
                     }
@@ -1956,6 +1958,22 @@ fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage)
             });
             if let Some(v) = value {
                 let _ = tx.send(OscMessage::SetSpectrumBin(idx, v));
+            }
+        }
+        return;
+    }
+
+    // /vid/<filename>/position 0.0-1.0
+    if let Some(rest) = addr.strip_prefix("/vid/") {
+        if let Some(filename) = rest.strip_suffix("/position") {
+            let value = msg.args.first().and_then(|a| match a {
+                OscType::Float(v)  => Some(*v),
+                OscType::Int(v)    => Some(*v as f32),
+                OscType::Double(v) => Some(*v as f32),
+                _ => None,
+            });
+            if let Some(v) = value {
+                let _ = tx.send(OscMessage::SetVideoPosition(filename.to_string(), v.clamp(0.0, 1.0)));
             }
         }
         return;
