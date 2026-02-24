@@ -1,6 +1,6 @@
 {
   "name": "wgsleng",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "main": "wgsleng.js",
   "license": "Zlib",
   "scripts": {
