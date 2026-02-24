@@ -59,6 +59,9 @@ npm run native
 
 # load logo example, can also be a zip-file
 ./native/target/release/wgsleng examples/logo/main.wgsl
+
+# enable live camera input (requires system camera access)
+cargo build --release --features camera -p wgsleng
 ```
 
 ## Creating Games
@@ -164,6 +167,16 @@ let normal = @model("bunny.obj").normals[idx];
 
 let uv = (dist + 32.0) / 64.0;
 let sprite = textureSampleLevel(@texture("player.png"), @engine.sampler, uv, 0.0);
+
+// VIDEO: play a looping video file (MP4, WebM, GIF, etc.) as a texture
+// native: requires system ffmpeg for non-GIF formats
+// web: uses <video> element
+let frame = textureSample(@video("clip.mp4"), @engine.sampler, uv);
+
+// CAMERA: sample a live camera feed as a texture (index 0 = default camera)
+// native: build with --features camera
+// web: uses getUserMedia
+let cam = textureSample(@camera(0), @engine.sampler, uv);
 ```
 
 ## asset credits

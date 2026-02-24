@@ -3,7 +3,7 @@ name: Release Native CLI
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   release:
     types: [created]
 
@@ -51,7 +51,7 @@ jobs:
 
       - name: Build
         working-directory: ./native
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --features camera
 
       - name: Prepare artifact
         run: |

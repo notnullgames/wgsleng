@@ -47,6 +47,238 @@ struct Args {
 
 // All preprocessing logic is now in lib.rs
 
+/// Runtime state for a @video() source
+enum VideoSourceRuntime {
+    Gif {
+        frames: Vec<(Vec<u8>, u32)>, // (rgba_bytes, delay_ms)
+        width: u32,
+        height: u32,
+        current_frame: usize,
+        frame_elapsed_ms: f32,
+    },
+    /// Decoded via `ffmpeg` CLI subprocess — works for MP4, WebM, MOV, etc.
+    FfmpegStream {
+        latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+        width: u32,
+        height: u32,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    },
+    Black(u32, u32),
+}
+
+/// Runtime state for a @camera() source
+enum CameraSourceRuntime {
+    #[cfg(feature = "camera")]
+    Live {
+        latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+        width: u32,
+        height: u32,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    },
+    Black(u32, u32),
+}
+
+fn load_gif_source(data: &[u8]) -> Result<(VideoSourceRuntime, u32, u32), Box<dyn std::error::Error>> {
+    use image::codecs::gif::GifDecoder;
+    use image::AnimationDecoder;
+    let decoder = GifDecoder::new(Cursor::new(data))?;
+    let mut frames_vec: Vec<(Vec<u8>, u32)> = Vec::new();
+    let mut width = 1u32;
+    let mut height = 1u32;
+    for frame_result in decoder.into_frames() {
+        let frame = frame_result?;
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        let delay_ms = if denom == 0 { 100 } else { (numer / denom).max(10) };
+        let img = frame.into_buffer();
+        width = img.width();
+        height = img.height();
+        frames_vec.push((img.into_raw(), delay_ms));
+    }
+    if frames_vec.is_empty() {
+        return Ok((VideoSourceRuntime::Black(1, 1), 1, 1));
+    }
+    Ok((VideoSourceRuntime::Gif { frames: frames_vec, width, height, current_frame: 0, frame_elapsed_ms: 0.0 }, width, height))
+}
+
+/// Decode an arbitrary video file using the system `ffmpeg` CLI.
+///
+/// Spawns `ffprobe` to get dimensions, then `ffmpeg` to stream raw RGBA frames
+/// in a background thread.  Works for MP4, WebM, MOV, MKV — anything ffmpeg
+/// supports.  Returns `Black` if ffmpeg is not installed.
+fn open_ffmpeg_video(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32, u32) {
+    use std::process::{Command, Stdio};
+    use std::io::Read;
+
+    // Write the video bytes to a temp file so ffmpeg can read them
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4")
+        .to_lowercase();
+    let tmp_path = std::env::temp_dir().join(format!("wgsleng_video_{}.{}", std::process::id(), ext));
+    if let Err(e) = std::fs::write(&tmp_path, &data) {
+        eprintln!("[video] failed to write temp file for {}: {}", filename, e);
+        return (VideoSourceRuntime::Black(1, 1), 1, 1);
+    }
+
+    // Use ffprobe to get width and height
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            tmp_path.to_str().unwrap(),
+        ])
+        .output();
+
+    let (width, height) = match probe {
+        Err(e) => {
+            eprintln!("[video] ffprobe not found ({}), using black for '{}'", e, filename);
+            let _ = std::fs::remove_file(&tmp_path);
+            return (VideoSourceRuntime::Black(1, 1), 1, 1);
+        }
+        Ok(out) => {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let parts: Vec<&str> = s.trim().split(',').collect();
+            if parts.len() < 2 {
+                eprintln!("[video] ffprobe gave unexpected output for '{}': {:?}", filename, s);
+                let _ = std::fs::remove_file(&tmp_path);
+                return (VideoSourceRuntime::Black(1, 1), 1, 1);
+            }
+            let w: u32 = parts[0].trim().parse().unwrap_or(1);
+            let h: u32 = parts[1].trim().parse().unwrap_or(1);
+            (w, h)
+        }
+    };
+
+    let latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let frame_clone = Arc::clone(&latest_frame);
+    let stop_clone = Arc::clone(&stop);
+    let tmp_path_clone = tmp_path.clone();
+    let frame_bytes = (width * height * 4) as usize;
+
+    std::thread::spawn(move || {
+        // Spawn ffmpeg to pipe raw RGBA frames to stdout, looping forever
+        let mut child = match Command::new("ffmpeg")
+            .args([
+                "-stream_loop", "-1",
+                "-re",  // read at native frame rate (prevents faster-than-realtime decode)
+                "-i", tmp_path_clone.to_str().unwrap(),
+                "-f", "rawvideo",
+                "-pix_fmt", "rgba",
+                "-vcodec", "rawvideo",
+                "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[video] failed to spawn ffmpeg: {}", e);
+                let _ = std::fs::remove_file(&tmp_path_clone);
+                return;
+            }
+        };
+
+        let mut stdout = child.stdout.take().unwrap();
+        let mut buf = vec![0u8; frame_bytes];
+
+        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut total = 0;
+            while total < frame_bytes {
+                match stdout.read(&mut buf[total..]) {
+                    Ok(0) => {
+                        // EOF — ffmpeg finished (shouldn't happen with -stream_loop -1)
+                        let _ = child.kill();
+                        let _ = std::fs::remove_file(&tmp_path_clone);
+                        return;
+                    }
+                    Ok(n) => total += n,
+                    Err(_) => {
+                        let _ = child.kill();
+                        let _ = std::fs::remove_file(&tmp_path_clone);
+                        return;
+                    }
+                }
+            }
+            if let Ok(mut guard) = frame_clone.lock() {
+                *guard = Some(buf.clone());
+            }
+        }
+
+        let _ = child.kill();
+        let _ = std::fs::remove_file(&tmp_path_clone);
+    });
+
+    eprintln!("[video] streaming '{}' via ffmpeg ({}x{})", filename, width, height);
+    (VideoSourceRuntime::FfmpegStream { latest_frame, width, height, stop }, width, height)
+}
+
+fn load_video_source(filename: &str, data: Vec<u8>) -> (VideoSourceRuntime, u32, u32) {
+    let ext = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ext == "gif" {
+        match load_gif_source(&data) {
+            Ok(result) => return result,
+            Err(e) => eprintln!("[video] failed to load GIF {}: {}", filename, e),
+        }
+    }
+
+    // For anything other than GIF, try the system ffmpeg CLI
+    open_ffmpeg_video(filename, data)
+}
+
+fn open_camera_source(cam_idx: u32) -> (CameraSourceRuntime, u32, u32) {
+    #[cfg(feature = "camera")]
+    {
+        use nokhwa::{Camera, pixel_format::RgbAFormat, utils::{CameraIndex, RequestedFormat, RequestedFormatType}};
+        let index = CameraIndex::Index(cam_idx);
+        let requested = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::AbsoluteHighestFrameRate);
+        match Camera::new(index, requested) {
+            Ok(mut camera) => {
+                let res = camera.resolution();
+                let width = res.width_x;
+                let height = res.height_y;
+                let latest_frame: Arc<std::sync::Mutex<Option<Vec<u8>>>> = Arc::new(std::sync::Mutex::new(None));
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let frame_clone = Arc::clone(&latest_frame);
+                let stop_clone = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    if let Err(e) = camera.open_stream() {
+                        eprintln!("[camera] failed to open stream for camera {}: {}", cam_idx, e);
+                        return;
+                    }
+                    while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        match camera.frame() {
+                            Ok(buffer) => {
+                                if let Ok(decoded) = buffer.decode_image::<RgbAFormat>() {
+                                    *frame_clone.lock().unwrap() = Some(decoded.into_raw());
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[camera] frame error on camera {}: {}", cam_idx, e);
+                                break;
+                            }
+                        }
+                    }
+                });
+                return (CameraSourceRuntime::Live { latest_frame, width, height, stop }, width, height);
+            }
+            Err(e) => eprintln!("[camera] failed to open camera {}: {}", cam_idx, e),
+        }
+    }
+    #[cfg(not(feature = "camera"))]
+    eprintln!("[camera] camera feature not enabled for camera index {}", cam_idx);
+    (CameraSourceRuntime::Black(640, 480), 640, 480)
+}
+
 struct State {
     window: Arc<Window>,
     title: String,
@@ -79,6 +311,12 @@ struct State {
     engine_buffer_size: usize,
     // OSC name → osc slot index mapping (populated from @osc("name") in shader)
     osc_name_map: HashMap<String, usize>,
+    // Dynamic video textures
+    video_textures: Vec<wgpu::Texture>,
+    video_sources: Vec<VideoSourceRuntime>,
+    // Dynamic camera textures
+    camera_textures: Vec<wgpu::Texture>,
+    camera_sources: Vec<CameraSourceRuntime>,
 }
 
 struct BufferOffsets {
@@ -271,6 +509,68 @@ impl State {
             textures.push(texture);
         }
 
+        // Load video sources
+        let mut video_textures = Vec::new();
+        let mut video_sources: Vec<VideoSourceRuntime> = Vec::new();
+        for video_file in &metadata.videos {
+            let data = preprocessor.game_source.read_file(video_file)?;
+            let (source, vid_w, vid_h) = load_video_source(video_file, data);
+            let (init_data, vid_w, vid_h) = match &source {
+                VideoSourceRuntime::Gif { frames, width, height, current_frame, .. } =>
+                    (frames[*current_frame].0.clone(), *width, *height),
+                VideoSourceRuntime::FfmpegStream { width, height, .. } =>
+                    (vec![0u8; (*width * *height * 4) as usize], *width, *height),
+                VideoSourceRuntime::Black(w, h) =>
+                    (vec![0u8; (*w * *h * 4) as usize], *w, *h),
+            };
+            let tex_size = wgpu::Extent3d { width: vid_w, height: vid_h, depth_or_array_layers: 1 };
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Video Texture"),
+                size: tex_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &init_data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * vid_w), rows_per_image: Some(vid_h) },
+                tex_size,
+            );
+            video_textures.push(tex);
+            video_sources.push(source);
+        }
+
+        // Open camera sources
+        let mut camera_textures = Vec::new();
+        let mut camera_sources: Vec<CameraSourceRuntime> = Vec::new();
+        for &cam_idx in &metadata.cameras {
+            let (source, cam_w, cam_h) = open_camera_source(cam_idx);
+            let black_data = vec![0u8; (cam_w * cam_h * 4) as usize];
+            let cam_size = wgpu::Extent3d { width: cam_w, height: cam_h, depth_or_array_layers: 1 };
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Camera Texture"),
+                size: cam_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &black_data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * cam_w), rows_per_image: Some(cam_h) },
+                cam_size,
+            );
+            camera_textures.push(tex);
+            camera_sources.push(source);
+        }
+
         // Create sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -355,6 +655,36 @@ impl State {
         for i in 0..metadata.textures.len() {
             render_group0_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: (i + 1) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+
+        // Add video texture bindings
+        let video_base = metadata.textures.len() + 1;
+        for i in 0..metadata.videos.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (video_base + i) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+
+        // Add camera texture bindings
+        let camera_base = metadata.textures.len() + metadata.videos.len() + 1;
+        for i in 0..metadata.cameras.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (camera_base + i) as u32,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -510,6 +840,12 @@ impl State {
         let texture_views: Vec<_> = textures.iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
+        let video_texture_views: Vec<_> = video_textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+        let camera_texture_views: Vec<_> = camera_textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
 
         // Create bind groups
         // Group 0 always includes sampler (since preprocessor always adds it)
@@ -524,6 +860,22 @@ impl State {
         for (i, view) in texture_views.iter().enumerate() {
             group0_entries.push(wgpu::BindGroupEntry {
                 binding: (i + 1) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+
+        // Add video texture views
+        for (i, view) in video_texture_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (video_base + i) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+
+        // Add camera texture views
+        for (i, view) in camera_texture_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (camera_base + i) as u32,
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
@@ -613,6 +965,10 @@ impl State {
             audio_count: metadata.sounds.len(),
             engine_buffer_size: total_size,
             osc_name_map: metadata.osc_params.iter().cloned().zip(0..).collect(),
+            video_textures,
+            video_sources,
+            camera_textures,
+            camera_sources,
         })
     }
 
@@ -660,12 +1016,77 @@ impl State {
         }
     }
 
+    fn update_dynamic_textures(&mut self, dt_secs: f32) {
+        // Update GIF video frames
+        for i in 0..self.video_sources.len() {
+            let maybe_write: Option<(Vec<u8>, u32, u32)> = match &mut self.video_sources[i] {
+                VideoSourceRuntime::Gif { frames, width, height, current_frame, frame_elapsed_ms } => {
+                    *frame_elapsed_ms += dt_secs * 1000.0;
+                    let prev = *current_frame;
+                    loop {
+                        let delay = frames[*current_frame].1 as f32;
+                        if *frame_elapsed_ms >= delay {
+                            *frame_elapsed_ms -= delay;
+                            *current_frame = (*current_frame + 1) % frames.len();
+                        } else {
+                            break;
+                        }
+                    }
+                    // Only upload when the frame actually changed
+                    if *current_frame != prev {
+                        Some((frames[*current_frame].0.clone(), *width, *height))
+                    } else {
+                        None
+                    }
+                }
+                VideoSourceRuntime::FfmpegStream { latest_frame, width, height, .. } => {
+                    latest_frame.try_lock().ok()
+                        .and_then(|mut g| g.take())
+                        .map(|data| (data, *width, *height))
+                }
+                VideoSourceRuntime::Black(_, _) => None,
+            };
+            if let Some((data, w, h)) = maybe_write {
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.video_textures[i], mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &data,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+            }
+        }
+
+        // Update camera frames
+        for i in 0..self.camera_sources.len() {
+            let maybe_write: Option<(Vec<u8>, u32, u32)> = match &mut self.camera_sources[i] {
+                #[cfg(feature = "camera")]
+                CameraSourceRuntime::Live { latest_frame, width, height, .. } => {
+                    latest_frame.try_lock().ok()
+                        .and_then(|mut g| g.take())
+                        .map(|data| (data, *width, *height))
+                }
+                CameraSourceRuntime::Black(_, _) => None,
+            };
+            if let Some((data, w, h)) = maybe_write {
+                self.queue.write_texture(
+                    wgpu::ImageCopyTexture { texture: &self.camera_textures[i], mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                    &data,
+                    wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                );
+            }
+        }
+    }
+
     fn update(&mut self) {
         let now = std::time::Instant::now();
         let dt = (now - self.last_time).as_secs_f32();
         let dt = dt.min(0.1);
         self.last_time = now;
         self.time += dt;
+
+        // Update dynamic textures (video frames + camera frames)
+        self.update_dynamic_textures(dt);
 
         // Write input data to buffer (buttons + floats)
         let mut input_data = Vec::new();
@@ -873,6 +1294,21 @@ impl State {
 
     /// Hot-reload: re-preprocess shader, rebuild pipelines and textures, preserve GameState.
     fn reload(&mut self, game_path: &str, entry_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Signal ffmpeg video threads to stop before rebuilding
+        for source in &self.video_sources {
+            if let VideoSourceRuntime::FfmpegStream { stop, .. } = source {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        // Signal camera threads to stop before rebuilding
+        #[cfg(feature = "camera")]
+        for source in &self.camera_sources {
+            if let CameraSourceRuntime::Live { stop, .. } = source {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
         // Save GameState bytes before rebuilding
         let saved_state = self.read_game_state_bytes();
         let old_state_size = saved_state.len();
@@ -951,6 +1387,75 @@ impl State {
                 texture_size,
             );
             textures.push(texture);
+        }
+
+        // Load video sources
+        let mut new_video_textures: Vec<wgpu::Texture> = Vec::new();
+        let mut new_video_sources: Vec<VideoSourceRuntime> = Vec::new();
+        for video_file in &metadata.videos {
+            let data = match preprocessor.game_source.read_file(video_file) {
+                Ok(d) => d,
+                Err(e) => { eprintln!("[hot-reload] warning: failed to load video {}: {}", video_file, e); Vec::new() }
+            };
+            let (source, vid_w, vid_h) = if data.is_empty() {
+                (VideoSourceRuntime::Black(1, 1), 1u32, 1u32)
+            } else {
+                load_video_source(video_file, data)
+            };
+            let (init_data, vid_w, vid_h) = match &source {
+                VideoSourceRuntime::Gif { frames, width, height, current_frame, .. } =>
+                    (frames[*current_frame].0.clone(), *width, *height),
+                VideoSourceRuntime::FfmpegStream { width, height, .. } =>
+                    (vec![0u8; (*width * *height * 4) as usize], *width, *height),
+                VideoSourceRuntime::Black(w, h) =>
+                    (vec![0u8; (*w * *h * 4) as usize], *w, *h),
+            };
+            let tex_size = wgpu::Extent3d { width: vid_w, height: vid_h, depth_or_array_layers: 1 };
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Video Texture"),
+                size: tex_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &init_data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * vid_w), rows_per_image: Some(vid_h) },
+                tex_size,
+            );
+            new_video_textures.push(tex);
+            new_video_sources.push(source);
+        }
+
+        // Open camera sources
+        let mut new_camera_textures: Vec<wgpu::Texture> = Vec::new();
+        let mut new_camera_sources: Vec<CameraSourceRuntime> = Vec::new();
+        for &cam_idx in &metadata.cameras {
+            let (source, cam_w, cam_h) = open_camera_source(cam_idx);
+            let black_data = vec![0u8; (cam_w * cam_h * 4) as usize];
+            let cam_size = wgpu::Extent3d { width: cam_w, height: cam_h, depth_or_array_layers: 1 };
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Camera Texture"),
+                size: cam_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &black_data,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * cam_w), rows_per_image: Some(cam_h) },
+                cam_size,
+            );
+            new_camera_textures.push(tex);
+            new_camera_sources.push(source);
         }
 
         // Compute buffer layout (same logic as State::new)
@@ -1032,6 +1537,32 @@ impl State {
         for i in 0..metadata.textures.len() {
             render_group0_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: (i + 1) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+        let reload_video_base = metadata.textures.len() + 1;
+        for i in 0..metadata.videos.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (reload_video_base + i) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+        let reload_camera_base = metadata.textures.len() + metadata.videos.len() + 1;
+        for i in 0..metadata.cameras.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (reload_camera_base + i) as u32,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -1168,6 +1699,12 @@ impl State {
         let texture_views: Vec<_> = textures.iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
+        let new_video_views: Vec<_> = new_video_textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+        let new_camera_views: Vec<_> = new_camera_textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
 
         let mut group0_entries = vec![wgpu::BindGroupEntry {
             binding: 0,
@@ -1176,6 +1713,18 @@ impl State {
         for (i, view) in texture_views.iter().enumerate() {
             group0_entries.push(wgpu::BindGroupEntry {
                 binding: (i + 1) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        for (i, view) in new_video_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (reload_video_base + i) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        for (i, view) in new_camera_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (reload_camera_base + i) as u32,
                 resource: wgpu::BindingResource::TextureView(view),
             });
         }
@@ -1246,6 +1795,10 @@ impl State {
         self.depth_view = depth_view;
         self.engine_buffer_size = total_size;
         self.osc_name_map = metadata.osc_params.iter().cloned().zip(0..).collect();
+        self.video_textures = new_video_textures;
+        self.video_sources = new_video_sources;
+        self.camera_textures = new_camera_textures;
+        self.camera_sources = new_camera_sources;
 
         println!("[hot-reload] done");
         Ok(())

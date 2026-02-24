@@ -5,7 +5,7 @@
   "license": "Zlib",
   "scripts": {
     "start": "npx -y live-server",
-    "native": "cd native && cargo build --release",
+    "native": "cd native && cargo build --release --features camera",
     "render": "cargo run --manifest-path native/Cargo.toml --example render_to_image",
     "game:bob": "rm -f bob.zip && cd examples/bob && zip ../../bob.zip *.wgsl *.png *.ogg",
     "game:bunny": "rm -f bunny.zip && cd examples/bunny && zip ../../bunny.zip *.wgsl *.obj",

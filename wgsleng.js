@@ -287,6 +287,8 @@ class WGSLGameEngine {
       height: 600,
       sounds: [],
       textures: [],
+      videos: [],
+      cameras: [],
     };
 
     // Extract @set_title
@@ -325,6 +327,24 @@ class WGSLGameEngine {
         metadata.textures.push(match[1]);
       }
     }
+
+    // Find all @video() references
+    const videoMatches = source.matchAll(/@video\("([^"]+)"\)/g);
+    for (const match of videoMatches) {
+      if (!metadata.videos.includes(match[1])) {
+        metadata.videos.push(match[1]);
+      }
+    }
+
+    // Find all @camera() references
+    const cameraMatches = source.matchAll(/@camera\((\d+)\)/g);
+    for (const match of cameraMatches) {
+      const idx = parseInt(match[1]);
+      if (!metadata.cameras.includes(idx)) {
+        metadata.cameras.push(idx);
+      }
+    }
+    metadata.cameras.sort((a, b) => a - b);
 
     // Find all @model() references
     const modelMatches = source.matchAll(/@model\("([^"]+)"\)/g);
@@ -460,6 +480,18 @@ class WGSLGameEngine {
         header += `@group(0) @binding(${i + 1}) var _texture_${i}: texture_2d<f32>; // ${texName}\n`;
       });
 
+      // Add video texture bindings
+      const videoBase = metadata.textures.length + 1;
+      metadata.videos.forEach((vidName, i) => {
+        header += `@group(0) @binding(${videoBase + i}) var _video_${i}: texture_2d<f32>; // ${vidName}\n`;
+      });
+
+      // Add camera texture bindings
+      const cameraBase = metadata.textures.length + metadata.videos.length + 1;
+      metadata.cameras.forEach((camIdx, i) => {
+        header += `@group(0) @binding(${cameraBase + i}) var _camera_${i}: texture_2d<f32>; // camera ${camIdx}\n`;
+      });
+
       // Add engine buffer
       header += `\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n`;
 
@@ -534,6 +566,19 @@ class WGSLGameEngine {
         "g",
       );
       source = source.replace(regex, `${i}u`);
+    });
+
+    // Replace @video()
+    metadata.videos.forEach((vidName, i) => {
+      const escaped = vidName.replace(/\./g, "\\.");
+      const regex = new RegExp(`@video\\("${escaped}"\\)`, "g");
+      source = source.replace(regex, `_video_${i}`);
+    });
+
+    // Replace @camera()
+    metadata.cameras.forEach((camIdx, i) => {
+      const regex = new RegExp(`@camera\\(${camIdx}\\)`, "g");
+      source = source.replace(regex, `_camera_${i}`);
     });
 
     // Replace @model() references
@@ -711,8 +756,18 @@ class WGSLGameEngine {
     // Store model files
     this.modelFiles = metadata.models || [];
 
+    // Store video/camera metadata
+    this.videoFiles = metadata.videos || [];
+    this.cameraIndices = metadata.cameras || [];
+
     // Load textures
     await this.loadTextures();
+
+    // Load videos
+    await this.loadVideos();
+
+    // Load cameras
+    await this.loadCameras();
 
     // Load models
     await this.loadModels();
@@ -756,6 +811,26 @@ class WGSLGameEngine {
     for (let i = 0; i < this.textureFiles.length; i++) {
       renderGroup0Entries.push({
         binding: i + 1,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      });
+    }
+
+    // Add video texture bindings
+    const jsVideoBase = this.textureFiles.length + 1;
+    for (let i = 0; i < this.videoFiles.length; i++) {
+      renderGroup0Entries.push({
+        binding: jsVideoBase + i,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      });
+    }
+
+    // Add camera texture bindings
+    const jsCameraBase = this.textureFiles.length + this.videoFiles.length + 1;
+    for (let i = 0; i < this.cameraIndices.length; i++) {
+      renderGroup0Entries.push({
+        binding: jsCameraBase + i,
         visibility: GPUShaderStage.FRAGMENT,
         texture: { sampleType: "float", viewDimension: "2d" },
       });
@@ -925,6 +1000,122 @@ class WGSLGameEngine {
       addressModeU: "clamp-to-edge",
       addressModeV: "clamp-to-edge",
     });
+  }
+
+  async loadVideos() {
+    this.videoElements = [];
+    this.videoTextures = [];
+
+    for (const filename of this.videoFiles) {
+      const imageData = await this.readFile(filename);
+      const ext = filename.split(".").pop().toLowerCase();
+      const isGif = ext === "gif";
+
+      const mimeType = isGif ? "image/gif" : `video/${ext}`;
+      const blob = new Blob([imageData], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+
+      let width = 1, height = 1, element;
+
+      if (isGif) {
+        element = new Image();
+        element.src = url;
+        await new Promise((resolve) => {
+          element.onload = resolve;
+          element.onerror = resolve;
+        });
+        width = element.naturalWidth || 1;
+        height = element.naturalHeight || 1;
+      } else {
+        element = document.createElement("video");
+        element.autoplay = true;
+        element.loop = true;
+        element.muted = true;
+        element.playsInline = true;
+        element.src = url;
+        await new Promise((resolve) => {
+          element.onloadedmetadata = resolve;
+          element.onerror = resolve;
+        });
+        width = element.videoWidth || 1;
+        height = element.videoHeight || 1;
+        element.play().catch(() => {});
+      }
+
+      // Offscreen canvas for GIF (needed for copyExternalImageToTexture)
+      let canvas = null, ctx = null;
+      if (isGif) {
+        canvas = new OffscreenCanvas(width, height);
+        ctx = canvas.getContext("2d");
+      }
+
+      const texture = this.device.createTexture({
+        size: [width, height, 1],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+
+      this.videoElements.push({ element, canvas, ctx, texture, width, height, isGif });
+      this.videoTextures.push(texture);
+    }
+  }
+
+  async loadCameras() {
+    this.cameraVideoElements = [];
+    this.cameraTextures = [];
+
+    for (const camIdx of this.cameraIndices) {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter((d) => d.kind === "videoinput");
+        const deviceId = videoDevices[camIdx]?.deviceId;
+        if (!deviceId) throw new Error(`Camera index ${camIdx} not found`);
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: deviceId } },
+        });
+
+        const video = document.createElement("video");
+        video.srcObject = stream;
+        video.playsInline = true;
+        video.muted = true;
+        await new Promise((resolve) => {
+          video.onloadedmetadata = resolve;
+        });
+        video.play();
+
+        const width = video.videoWidth || 640;
+        const height = video.videoHeight || 480;
+
+        const texture = this.device.createTexture({
+          size: [width, height, 1],
+          format: "rgba8unorm",
+          usage:
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.COPY_DST |
+            GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+
+        this.cameraVideoElements.push({ element: video, texture, width, height });
+        this.cameraTextures.push(texture);
+      } catch (err) {
+        console.warn(`[camera] Failed to open camera ${camIdx}:`, err);
+        // Fallback: 1x1 black texture
+        const texture = this.device.createTexture({
+          size: [1, 1, 1],
+          format: "rgba8unorm",
+          usage:
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.COPY_DST |
+            GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        this.cameraVideoElements.push({ element: null, texture, width: 1, height: 1 });
+        this.cameraTextures.push(texture);
+      }
+    }
   }
 
   async loadModels() {
@@ -1112,6 +1303,24 @@ class WGSLGameEngine {
       });
     });
 
+    // Add video texture views
+    const bgVideoBase = this.textureFiles.length + 1;
+    (this.videoTextures || []).forEach((texture, i) => {
+      group0Entries.push({
+        binding: bgVideoBase + i,
+        resource: texture.createView(),
+      });
+    });
+
+    // Add camera texture views
+    const bgCameraBase = this.textureFiles.length + (this.videoFiles || []).length + 1;
+    (this.cameraTextures || []).forEach((texture, i) => {
+      group0Entries.push({
+        binding: bgCameraBase + i,
+        resource: texture.createView(),
+      });
+    });
+
     // Create bind groups for render pipeline using explicit layouts
     this.renderBindGroup0 = this.device.createBindGroup({
       layout: this.renderBindGroupLayout0,
@@ -1205,7 +1414,42 @@ class WGSLGameEngine {
     requestAnimationFrame(() => this.gameLoop());
   }
 
+  updateDynamicTextures() {
+    // Update video textures
+    for (const { element, canvas, ctx, texture, width, height, isGif } of (this.videoElements || [])) {
+      if (isGif && ctx) {
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(element, 0, 0, width, height);
+        this.device.queue.copyExternalImageToTexture(
+          { source: canvas },
+          { texture },
+          [width, height],
+        );
+      } else if (!isGif && element && element.readyState >= 2) {
+        this.device.queue.copyExternalImageToTexture(
+          { source: element },
+          { texture },
+          [width, height],
+        );
+      }
+    }
+
+    // Update camera textures
+    for (const { element, texture, width, height } of (this.cameraVideoElements || [])) {
+      if (element && element.readyState >= 2) {
+        this.device.queue.copyExternalImageToTexture(
+          { source: element },
+          { texture },
+          [width, height],
+        );
+      }
+    }
+  }
+
   update() {
+    // Update dynamic textures (video/camera)
+    this.updateDynamicTextures();
+
     // Write input state to buffer
     const inputData = new ArrayBuffer(48 + 16); // buttons + floats
     const inputView = new DataView(inputData);

@@ -93,6 +93,10 @@ pub struct Metadata {
     pub state_size: usize,
     /// Ordered list of @osc("name") parameters; index in this vec = osc slot index
     pub osc_params: Vec<String>,
+    /// Ordered list of @video("file") filenames; index = video binding slot
+    pub videos: Vec<String>,
+    /// Sorted list of @camera(N) indices; index = camera binding slot
+    pub cameras: Vec<u32>,
 }
 
 pub struct PreprocessorState {
@@ -147,6 +151,8 @@ impl PreprocessorState {
             models: Vec::new(),
             state_size: 0, // set to 0 so no buffer space is reserved unless GameState is found
             osc_params: Vec::new(),
+            videos: Vec::new(),
+            cameras: Vec::new(),
         };
 
         // Extract @set_title
@@ -186,6 +192,25 @@ impl PreprocessorState {
                 metadata.textures.push(texture_file);
             }
         }
+
+        // Find all @video() references
+        let video_re = Regex::new(r#"@video\("([^"]+)"\)"#)?;
+        for cap in video_re.captures_iter(&source) {
+            let f = cap[1].to_string();
+            if !metadata.videos.contains(&f) {
+                metadata.videos.push(f);
+            }
+        }
+
+        // Find all @camera() references
+        let camera_re = Regex::new(r#"@camera\((\d+)\)"#)?;
+        for cap in camera_re.captures_iter(&source) {
+            let idx: u32 = cap[1].parse()?;
+            if !metadata.cameras.contains(&idx) {
+                metadata.cameras.push(idx);
+            }
+        }
+        metadata.cameras.sort();
 
         // Find all @model() references
         let model_re = Regex::new(r#"@model\("([^"]+)"\)"#)?;
@@ -315,6 +340,22 @@ impl PreprocessorState {
                 header.push_str(&format!("@group(0) @binding({}) var _texture_{}: texture_2d<f32>; // {}\n", i + 1, i, tex));
             }
 
+            let video_base = metadata.textures.len() + 1;
+            for (i, vid) in metadata.videos.iter().enumerate() {
+                header.push_str(&format!(
+                    "@group(0) @binding({}) var _video_{}: texture_2d<f32>; // {}\n",
+                    video_base + i, i, vid
+                ));
+            }
+
+            let camera_base = metadata.textures.len() + metadata.videos.len() + 1;
+            for (i, cam) in metadata.cameras.iter().enumerate() {
+                header.push_str(&format!(
+                    "@group(0) @binding({}) var _camera_{}: texture_2d<f32>; // camera {}\n",
+                    camera_base + i, i, cam
+                ));
+            }
+
             header.push_str("\n@group(1) @binding(0) var<storage, read_write> _engine: GameEngineHost;\n");
 
             // Add model buffers
@@ -382,6 +423,19 @@ impl PreprocessorState {
             let escaped = texture.replace(".", "\\.");
             let texture_index_re = Regex::new(&format!(r#"@texture_index\("{}"\)"#, escaped))?;
             source = texture_index_re.replace_all(&source, &format!("{}u", i)).to_string();
+        }
+
+        // Replace @video()
+        for (i, video) in metadata.videos.iter().enumerate() {
+            let escaped = video.replace(".", "\\.");
+            let re = Regex::new(&format!(r#"@video\("{}"\)"#, escaped))?;
+            source = re.replace_all(&source, &format!("_video_{}", i)).to_string();
+        }
+
+        // Replace @camera()
+        for (i, cam_idx) in metadata.cameras.iter().enumerate() {
+            let re = Regex::new(&format!(r#"@camera\({}\)"#, cam_idx))?;
+            source = re.replace_all(&source, &format!("_camera_{}", i)).to_string();
         }
 
         // Replace @str() with fixed-size array of character codes (padded with zeros)

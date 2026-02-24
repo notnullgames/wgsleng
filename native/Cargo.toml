@@ -16,12 +16,16 @@ path = "src/main.rs"
 name = "render_to_image"
 path = "examples/render_to_image.rs"
 
+[features]
+default = []
+camera = ["dep:nokhwa"]
+
 [dependencies]
 wgpu = "23"
 winit = "0.30"
 pollster = "0.3"
 bytemuck = { version = "1.14", features = ["derive"] }
-image = "0.25"
+image = { version = "0.25", features = ["gif"] }
 rodio = "0.19"
 regex = "1.10"
 env_logger = "0.11"
@@ -33,3 +37,4 @@ tokio = { version = "1", features = ["full"] }
 png = "0.17"
 notify = "6"
 rosc = "0.10"
+nokhwa = { version = "0.10", features = ["input-native", "output-threaded"], optional = true }
