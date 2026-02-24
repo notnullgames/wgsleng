@@ -8,6 +8,11 @@ use zip::ZipArchive;
 pub mod obj_loader;
 pub use obj_loader::ObjModel;
 
+/// Number of named OSC float slots accessible via @osc("name") or @engine.osc[N]
+pub const OSC_FLOAT_COUNT: usize = 64;
+/// Number of spectrum/FFT bins accessible via @engine.spectrum[N] or /spectrum OSC messages
+pub const SPECTRUM_SIZE: usize = 128;
+
 pub const BTN_UP: usize = 0;
 pub const BTN_DOWN: usize = 1;
 pub const BTN_LEFT: usize = 2;
@@ -86,6 +91,8 @@ pub struct Metadata {
     pub sounds: Vec<String>,
     pub models: Vec<String>,
     pub state_size: usize,
+    /// Ordered list of @osc("name") parameters; index in this vec = osc slot index
+    pub osc_params: Vec<String>,
 }
 
 pub struct PreprocessorState {
@@ -138,7 +145,8 @@ impl PreprocessorState {
             textures: Vec::new(),
             sounds: Vec::new(),
             models: Vec::new(),
-            state_size: 16,
+            state_size: 0, // set to 0 so no buffer space is reserved unless GameState is found
+            osc_params: Vec::new(),
         };
 
         // Extract @set_title
@@ -185,6 +193,15 @@ impl PreprocessorState {
             let model_file = cap[1].to_string();
             if !metadata.models.contains(&model_file) {
                 metadata.models.push(model_file);
+            }
+        }
+
+        // Find all @osc() references and assign sequential slot indices
+        let osc_ref_re = Regex::new(r#"@osc\("([^"]+)"\)"#)?;
+        for cap in osc_ref_re.captures_iter(&source) {
+            let param_name = cap[1].to_string();
+            if !metadata.osc_params.contains(&param_name) {
+                metadata.osc_params.push(param_name);
             }
         }
 
@@ -271,6 +288,8 @@ impl PreprocessorState {
             if !metadata.sounds.is_empty() {
                 header.push_str(&format!("    audio: array<u32, {}>, // audio trigger counters\n", metadata.sounds.len()));
             }
+            header.push_str(&format!("    osc: array<f32, {}>, // OSC float uniforms: /u/name or /u/N\n", OSC_FLOAT_COUNT));
+            header.push_str(&format!("    spectrum: array<f32, {}>, // audio spectrum: /spectrum f f f...\n", SPECTRUM_SIZE));
             header.push_str("}\n\n");
 
             // Add button constants
@@ -327,6 +346,15 @@ impl PreprocessorState {
         source = source.replace("@engine.screen_height", "_engine.screen_height");
         source = source.replace("@engine.sampler", "_engine_sampler");
         source = source.replace("@engine.state", "_engine.state");
+        source = source.replace("@engine.osc", "_engine.osc");
+        source = source.replace("@engine.spectrum", "_engine.spectrum");
+
+        // Replace @osc("name") with indexed slot access
+        for (i, name) in metadata.osc_params.iter().enumerate() {
+            let escaped = regex::escape(name);
+            let osc_name_re = Regex::new(&format!(r#"@osc\("{}"\)"#, escaped))?;
+            source = osc_name_re.replace_all(&source, &format!("_engine.osc[{}]", i)).to_string();
+        }
 
         // Replace @sound().play() and @sound().stop()
         for (i, sound) in metadata.sounds.iter().enumerate() {

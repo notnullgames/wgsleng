@@ -10,7 +10,24 @@ use winit::{
     window::{Window, WindowId},
 };
 use clap::Parser;
-use wgsleng::{GameSource, PreprocessorState, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_START, BTN_SELECT};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use rosc::{OscPacket, OscType};
+use std::collections::HashMap;
+use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT, SPECTRUM_SIZE,
+    BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_START, BTN_SELECT};
+
+enum OscMessage {
+    /// /u/name value  or  /u/N value
+    SetFloat(String, f32),
+    /// /spectrum f f f...  (up to SPECTRUM_SIZE values)
+    SetSpectrum(Vec<f32>),
+    /// /spectrum/N value
+    SetSpectrumBin(usize, f32),
+    /// /shader filename.wgsl
+    LoadShader(String),
+    /// /reload
+    Reload,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "wgsl-game")]
@@ -18,6 +35,14 @@ use wgsleng::{GameSource, PreprocessorState, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIG
 struct Args {
     /// Path to game.wgsl file or .zip containing main.wgsl
     game_path: String,
+
+    /// Watch for file changes and hot-reload shader/textures (directory sources only)
+    #[arg(long, short = 'r')]
+    hot_reload: bool,
+
+    /// Listen for OSC messages on this UDP port (e.g. --osc-port 9000)
+    #[arg(long)]
+    osc_port: Option<u16>,
 }
 
 // All preprocessing logic is now in lib.rs
@@ -50,6 +75,10 @@ struct State {
     stream_handle: OutputStreamHandle,
     sound_buffers: Vec<Vec<u8>>,
     audio_count: usize,
+    // For hot-reload state preservation
+    engine_buffer_size: usize,
+    // OSC name → osc slot index mapping (populated from @osc("name") in shader)
+    osc_name_map: HashMap<String, usize>,
 }
 
 struct BufferOffsets {
@@ -57,6 +86,8 @@ struct BufferOffsets {
     floats: u64,
     state: u64,
     audio: u64,
+    osc_floats: u64,
+    spectrum: u64,
 }
 
 impl State {
@@ -258,8 +289,9 @@ impl State {
         let state_alignment = 8;
         let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
         let audio_size = metadata.sounds.len() * 4;
-
-        let total_size_unaligned = button_size + float_data_size + aligned_state_size + audio_size;
+        let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
+        let spectrum_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let total_size_unaligned = spectrum_offset + SPECTRUM_SIZE * 4;
         let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
         let buffer_offsets = BufferOffsets {
@@ -267,6 +299,8 @@ impl State {
             floats: button_size as u64,
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
+            osc_floats: osc_floats_offset as u64,
+            spectrum: spectrum_offset as u64,
         };
 
 
@@ -577,6 +611,8 @@ impl State {
             stream_handle,
             sound_buffers,
             audio_count: metadata.sounds.len(),
+            engine_buffer_size: total_size,
+            osc_name_map: metadata.osc_params.iter().cloned().zip(0..).collect(),
         })
     }
 
@@ -761,12 +797,469 @@ impl State {
 
         Ok(())
     }
+
+    /// Apply an OSC message by writing directly into the engine buffer.
+    fn apply_osc_message(&self, msg: &OscMessage) {
+        match msg {
+            OscMessage::SetFloat(name, value) => {
+                // Try name lookup first, then parse as numeric index
+                let idx = self.osc_name_map.get(name).copied().or_else(|| name.parse::<usize>().ok());
+                match idx {
+                    Some(i) if i < OSC_FLOAT_COUNT => {
+                        let offset = self.buffer_offsets.osc_floats + (i * 4) as u64;
+                        self.queue.write_buffer(&self.engine_buffer, offset, &value.to_le_bytes());
+                    }
+                    Some(i) => eprintln!("[osc] /u/{} index {} out of range (max {})", name, i, OSC_FLOAT_COUNT - 1),
+                    None => eprintln!("[osc] /u/{} not declared with @osc() in shader (use @osc(\"{}\") or an index)", name, name),
+                }
+            }
+            OscMessage::SetSpectrum(vals) => {
+                let count = vals.len().min(SPECTRUM_SIZE);
+                let bytes: Vec<u8> = vals[..count].iter().flat_map(|v| v.to_le_bytes()).collect();
+                self.queue.write_buffer(&self.engine_buffer, self.buffer_offsets.spectrum, &bytes);
+            }
+            OscMessage::SetSpectrumBin(idx, value) => {
+                if *idx < SPECTRUM_SIZE {
+                    let offset = self.buffer_offsets.spectrum + (*idx * 4) as u64;
+                    self.queue.write_buffer(&self.engine_buffer, offset, &value.to_le_bytes());
+                } else {
+                    eprintln!("[osc] /spectrum/{} out of range (max {})", idx, SPECTRUM_SIZE - 1);
+                }
+            }
+            // LoadShader and Reload are handled at the App level
+            _ => {}
+        }
+    }
+
+    /// Read the GameState section from the GPU buffer so we can restore it after reload.
+    fn read_game_state_bytes(&self) -> Vec<u8> {
+        let state_offset = self.buffer_offsets.state;
+        let state_size = if self.audio_count > 0 {
+            (self.buffer_offsets.audio - state_offset) as usize
+        } else {
+            self.engine_buffer_size.saturating_sub(state_offset as usize)
+        };
+
+        if state_size == 0 {
+            return Vec::new();
+        }
+
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("State Readback"),
+            size: state_size as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(&self.engine_buffer, state_offset, &readback, 0, state_size as u64);
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (tx, rx) = futures::channel::oneshot::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+        self.device.poll(wgpu::Maintain::Wait);
+
+        if let Ok(Ok(())) = pollster::block_on(rx) {
+            let data = slice.get_mapped_range();
+            let result = data.to_vec();
+            drop(data);
+            readback.unmap();
+            result
+        } else {
+            vec![0u8; state_size]
+        }
+    }
+
+    /// Hot-reload: re-preprocess shader, rebuild pipelines and textures, preserve GameState.
+    fn reload(&mut self, game_path: &str, entry_file: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // Save GameState bytes before rebuilding
+        let saved_state = self.read_game_state_bytes();
+        let old_state_size = saved_state.len();
+
+        // Re-open game source
+        let mut game_source = GameSource::open(game_path)?;
+
+        // Preprocess shader
+        let shader_code = game_source.read_text(entry_file)?;
+        let mut preprocessor = PreprocessorState::new(game_source);
+        let (processed_code, metadata) = preprocessor.preprocess_shader(&shader_code, true)?;
+
+        println!("[hot-reload] shader preprocessed ({}x{}, {} textures)", metadata.width, metadata.height, metadata.textures.len());
+
+        // Load audio
+        let mut sound_buffers = Vec::new();
+        for sound_file in &metadata.sounds {
+            match preprocessor.game_source.read_file(sound_file) {
+                Ok(data) => sound_buffers.push(data),
+                Err(e) => eprintln!("[hot-reload] warning: failed to load sound {}: {}", sound_file, e),
+            }
+        }
+
+        // Load models
+        let mut models: Vec<(wgpu::Buffer, wgpu::Buffer)> = Vec::new();
+        let mut model_vertex_counts: Vec<usize> = Vec::new();
+        for model_file in &metadata.models {
+            let model_data = preprocessor.game_source.read_file(model_file)?;
+            let model_path = std::path::PathBuf::from(model_file);
+            let temp_path = std::env::temp_dir().join(model_path.file_name().unwrap());
+            std::fs::write(&temp_path, model_data)?;
+            let model = wgsleng::ObjModel::load(&temp_path)?;
+            model_vertex_counts.push(model.vertex_count());
+
+            let positions_data: Vec<f32> = model.positions.iter()
+                .flat_map(|p| [p[0], p[1], p[2], 0.0])
+                .collect();
+            let positions_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Model Positions"),
+                contents: bytemuck::cast_slice(&positions_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+
+            let normals_data: Vec<f32> = model.normals.iter()
+                .flat_map(|n| [n[0], n[1], n[2], 0.0])
+                .collect();
+            let normals_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Model Normals"),
+                contents: bytemuck::cast_slice(&normals_data),
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+            models.push((positions_buffer, normals_buffer));
+        }
+
+        // Load textures
+        let mut textures: Vec<wgpu::Texture> = Vec::new();
+        for texture_file in &metadata.textures {
+            let img_data = preprocessor.game_source.read_file(texture_file)?;
+            let img = image::load_from_memory(&img_data)?.to_rgba8();
+            let dimensions = img.dimensions();
+            let texture_size = wgpu::Extent3d { width: dimensions.0, height: dimensions.1, depth_or_array_layers: 1 };
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Game Texture"),
+                size: texture_size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &img,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * dimensions.0), rows_per_image: Some(dimensions.1) },
+                texture_size,
+            );
+            textures.push(texture);
+        }
+
+        // Compute buffer layout (same logic as State::new)
+        let button_size = 12 * 4usize;
+        let float_data_size = 4 * 4usize;
+        let state_alignment = 8usize;
+        let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
+        let audio_size = metadata.sounds.len() * 4;
+        let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
+        let spectrum_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let total_size_unaligned = spectrum_offset + SPECTRUM_SIZE * 4;
+        let total_size = ((total_size_unaligned + 15) / 16) * 16;
+
+        let new_buffer_offsets = BufferOffsets {
+            buttons: 0,
+            floats: button_size as u64,
+            state: (button_size + float_data_size) as u64,
+            audio: (button_size + float_data_size + aligned_state_size) as u64,
+            osc_floats: osc_floats_offset as u64,
+            spectrum: spectrum_offset as u64,
+        };
+
+        let new_state_size = if metadata.sounds.len() > 0 {
+            (new_buffer_offsets.audio - new_buffer_offsets.state) as usize
+        } else {
+            osc_floats_offset.saturating_sub(new_buffer_offsets.state as usize)
+        };
+
+        // Build new engine buffer, preserving GameState if sizes match
+        let mut init_data = vec![0u8; total_size];
+        let w_bytes = (self.config.width as f32).to_le_bytes();
+        let h_bytes = (self.config.height as f32).to_le_bytes();
+        let f = new_buffer_offsets.floats as usize;
+        init_data[f + 8..f + 12].copy_from_slice(&w_bytes);
+        init_data[f + 12..f + 16].copy_from_slice(&h_bytes);
+
+        if new_state_size == old_state_size && !saved_state.is_empty() {
+            let ss = new_buffer_offsets.state as usize;
+            let se = ss + new_state_size;
+            if se <= init_data.len() {
+                init_data[ss..se].copy_from_slice(&saved_state);
+                println!("[hot-reload] GameState preserved ({} bytes)", new_state_size);
+            }
+        } else if new_state_size != old_state_size {
+            println!("[hot-reload] GameState size changed ({} -> {}), resetting state", old_state_size, new_state_size);
+        }
+
+        let engine_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Engine Buffer"),
+            contents: &init_data,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        });
+
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Staging Buffer"),
+            size: total_size as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Sampler
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Bind group layouts (same as State::new)
+        let mut render_group0_entries = vec![wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        }];
+        for i in 0..metadata.textures.len() {
+            render_group0_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (i + 1) as u32,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+        let render_bind_group_layout0 = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Render Bind Group Layout 0"),
+            entries: &render_group0_entries,
+        });
+        let render_bind_group_layout1 = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Render Bind Group Layout 1"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let mut model_group_entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+        for i in 0..metadata.models.len() {
+            let bb = 1 + i * 2;
+            model_group_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: bb as u32,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            });
+            model_group_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: (bb + 1) as u32,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            });
+        }
+        let render_bind_group_layout2 = if !model_group_entries.is_empty() {
+            Some(self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Render Bind Group Layout 2"),
+                entries: &model_group_entries,
+            }))
+        } else {
+            None
+        };
+
+        let empty_bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Empty Bind Group Layout"),
+            entries: &[],
+        });
+        let compute_bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Compute Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+
+        // Create pipelines inside an error scope to catch shader errors gracefully
+        self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Game Shader"),
+            source: wgpu::ShaderSource::Wgsl(processed_code.into()),
+        });
+
+        let mut render_layouts: Vec<&wgpu::BindGroupLayout> = vec![&render_bind_group_layout0, &render_bind_group_layout1];
+        if let Some(ref layout2) = render_bind_group_layout2 {
+            render_layouts.push(layout2);
+        }
+        let render_pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &render_layouts,
+            push_constant_ranges: &[],
+        });
+        let compute_pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Compute Pipeline Layout"),
+            bind_group_layouts: &[&empty_bind_group_layout, &compute_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let render_pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_render"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: self.config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Compute Pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &shader,
+            entry_point: Some("update"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        // Check for shader/pipeline errors
+        let pipeline_error = pollster::block_on(self.device.pop_error_scope());
+        if let Some(err) = pipeline_error {
+            eprintln!("[hot-reload] shader error, keeping old pipelines:\n  {}", err);
+            return Err(format!("shader error: {}", err).into());
+        }
+
+        // Build bind groups with new resources
+        let texture_views: Vec<_> = textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+
+        let mut group0_entries = vec![wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+        }];
+        for (i, view) in texture_views.iter().enumerate() {
+            group0_entries.push(wgpu::BindGroupEntry {
+                binding: (i + 1) as u32,
+                resource: wgpu::BindingResource::TextureView(view),
+            });
+        }
+        let render_bind_group0 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Render Bind Group 0"),
+            layout: &render_bind_group_layout0,
+            entries: &group0_entries,
+        });
+        let render_bind_group1 = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Render Bind Group 1"),
+            layout: &render_bind_group_layout1,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: engine_buffer.as_entire_binding() }],
+        });
+        let render_bind_group2 = if let Some(ref layout2) = render_bind_group_layout2 {
+            let mut model_entries = Vec::new();
+            for (i, (pos_buf, norm_buf)) in models.iter().enumerate() {
+                let bb = 1 + i * 2;
+                model_entries.push(wgpu::BindGroupEntry { binding: bb as u32, resource: pos_buf.as_entire_binding() });
+                model_entries.push(wgpu::BindGroupEntry { binding: (bb + 1) as u32, resource: norm_buf.as_entire_binding() });
+            }
+            Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Render Bind Group 2"),
+                layout: layout2,
+                entries: &model_entries,
+            }))
+        } else {
+            None
+        };
+        let empty_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Empty Bind Group"),
+            layout: &empty_bind_group_layout,
+            entries: &[],
+        });
+        let compute_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Compute Bind Group"),
+            layout: &compute_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: engine_buffer.as_entire_binding() }],
+        });
+
+        // Recreate depth texture to match current surface size
+        let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Depth Texture"),
+            size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24Plus,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Atomically replace all pipeline state
+        self.compute_pipeline = compute_pipeline;
+        self.render_pipeline = render_pipeline;
+        self.empty_bind_group = empty_bind_group;
+        self.compute_bind_group = compute_bind_group;
+        self.render_bind_group0 = render_bind_group0;
+        self.render_bind_group1 = render_bind_group1;
+        self.render_bind_group2 = render_bind_group2;
+        self.engine_buffer = engine_buffer;
+        self.staging_buffer = staging_buffer;
+        self.buffer_offsets = new_buffer_offsets;
+        self.sound_buffers = sound_buffers;
+        self.audio_count = metadata.sounds.len();
+        self.model_vertex_count = model_vertex_counts.get(0).copied().unwrap_or(0);
+        self.depth_texture = depth_texture;
+        self.depth_view = depth_view;
+        self.engine_buffer_size = total_size;
+        self.osc_name_map = metadata.osc_params.iter().cloned().zip(0..).collect();
+
+        println!("[hot-reload] done");
+        Ok(())
+    }
 }
 
 struct App {
     state: Option<State>,
     game_source: Option<GameSource>,
     entry_file: String,
+    game_path: String,
+    hot_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
+    _watcher: Option<RecommendedWatcher>,
+    osc_rx: Option<std::sync::mpsc::Receiver<OscMessage>>,
 }
 
 impl ApplicationHandler for App {
@@ -817,10 +1310,159 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Process OSC messages
+        if let Some(ref osc_rx) = self.osc_rx {
+            while let Ok(msg) = osc_rx.try_recv() {
+                match msg {
+                    OscMessage::LoadShader(ref entry) => {
+                        println!("[osc] switching shader entry to: {}", entry);
+                        self.entry_file = entry.clone();
+                        if let Some(state) = &mut self.state {
+                            if let Err(e) = state.reload(&self.game_path, &self.entry_file) {
+                                eprintln!("[osc] reload error: {}", e);
+                            }
+                        }
+                    }
+                    OscMessage::Reload => {
+                        println!("[osc] /reload received");
+                        if let Some(state) = &mut self.state {
+                            if let Err(e) = state.reload(&self.game_path, &self.entry_file) {
+                                eprintln!("[osc] reload error: {}", e);
+                            }
+                        }
+                    }
+                    ref other => {
+                        if let Some(ref state) = self.state {
+                            state.apply_osc_message(other);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for hot-reload signal
+        if let Some(ref rx) = self.hot_reload_rx {
+            if rx.try_recv().is_ok() {
+                // Drain any additional queued events (debounce)
+                while rx.try_recv().is_ok() {}
+                if let Some(state) = &mut self.state {
+                    println!("[hot-reload] file change detected, reloading...");
+                    if let Err(e) = state.reload(&self.game_path, &self.entry_file) {
+                        eprintln!("[hot-reload] error: {}", e);
+                    }
+                }
+            }
+        }
+
         if let Some(state) = &self.state {
             state.window.request_redraw();
         }
     }
+}
+
+fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage) {
+    let addr = msg.addr.as_str();
+
+    // /u/name value  or  /u/N value
+    if let Some(name) = addr.strip_prefix("/u/") {
+        let value = msg.args.first().and_then(|a| match a {
+            OscType::Float(v) => Some(*v),
+            OscType::Int(v)   => Some(*v as f32),
+            OscType::Double(v) => Some(*v as f32),
+            _ => None,
+        });
+        if let Some(v) = value {
+            let _ = tx.send(OscMessage::SetFloat(name.to_string(), v));
+        }
+        return;
+    }
+
+    // /spectrum  (list of floats for all bins)
+    if addr == "/spectrum" {
+        let vals: Vec<f32> = msg.args.iter().filter_map(|a| match a {
+            OscType::Float(v)  => Some(*v),
+            OscType::Int(v)    => Some(*v as f32),
+            OscType::Double(v) => Some(*v as f32),
+            _ => None,
+        }).collect();
+        if !vals.is_empty() {
+            let _ = tx.send(OscMessage::SetSpectrum(vals));
+        }
+        return;
+    }
+
+    // /spectrum/N value
+    if let Some(rest) = addr.strip_prefix("/spectrum/") {
+        if let Ok(idx) = rest.parse::<usize>() {
+            let value = msg.args.first().and_then(|a| match a {
+                OscType::Float(v)  => Some(*v),
+                OscType::Int(v)    => Some(*v as f32),
+                OscType::Double(v) => Some(*v as f32),
+                _ => None,
+            });
+            if let Some(v) = value {
+                let _ = tx.send(OscMessage::SetSpectrumBin(idx, v));
+            }
+        }
+        return;
+    }
+
+    // /shader filename.wgsl
+    if addr == "/shader" {
+        if let Some(OscType::String(s)) = msg.args.first() {
+            let _ = tx.send(OscMessage::LoadShader(s.clone()));
+        }
+        return;
+    }
+
+    // /reload
+    if addr == "/reload" {
+        let _ = tx.send(OscMessage::Reload);
+    }
+}
+
+fn start_osc_listener(port: u16) -> Option<std::sync::mpsc::Receiver<OscMessage>> {
+    use std::net::UdpSocket;
+
+    let socket = match UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[osc] failed to bind port {}: {}", port, e);
+            return None;
+        }
+    };
+
+    println!("[osc] listening on 0.0.0.0:{}", port);
+
+    let (tx, rx) = std::sync::mpsc::channel::<OscMessage>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        loop {
+            match socket.recv_from(&mut buf) {
+                Ok((size, _addr)) => {
+                    match rosc::decoder::decode_udp(&buf[..size]) {
+                        Ok((_rem, OscPacket::Message(msg))) => {
+                            dispatch_osc(&tx, msg);
+                        }
+                        Ok((_rem, OscPacket::Bundle(bundle))) => {
+                            for content in bundle.content {
+                                if let OscPacket::Message(msg) = content {
+                                    dispatch_osc(&tx, msg);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("[osc] decode error: {:?}", e),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[osc] recv error: {}", e);
+                    break;
+                }
+            }
+        }
+    });
+
+    Some(rx)
 }
 
 fn main() {
@@ -842,11 +1484,69 @@ fn main() {
     let game_source = GameSource::open(&args.game_path)
         .expect("Failed to open game source");
 
+    // Set up hot-reload file watcher if requested
+    let (hot_reload_rx, _watcher) = if args.hot_reload {
+        if args.game_path.ends_with(".zip") {
+            eprintln!("[hot-reload] not available for zip sources");
+            (None, None)
+        } else {
+            let watch_dir = if args.game_path.ends_with(".wgsl") {
+                std::path::Path::new(&args.game_path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .to_path_buf()
+            } else {
+                std::path::PathBuf::from(&args.game_path)
+            };
+
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            let mut last_sent = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(500))
+                .unwrap_or(std::time::Instant::now());
+            let debounce = std::time::Duration::from_millis(200);
+
+            match RecommendedWatcher::new(
+                move |res: notify::Result<notify::Event>| {
+                    if res.is_ok() {
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_sent) >= debounce {
+                            last_sent = now;
+                            let _ = tx.send(());
+                        }
+                    }
+                },
+                notify::Config::default(),
+            ) {
+                Ok(mut watcher) => {
+                    if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
+                        eprintln!("[hot-reload] failed to watch {:?}: {}", watch_dir, e);
+                        (None, None)
+                    } else {
+                        println!("[hot-reload] watching {:?}", watch_dir);
+                        (Some(rx), Some(watcher))
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[hot-reload] failed to create watcher: {}", e);
+                    (None, None)
+                }
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    let osc_rx = args.osc_port.and_then(start_osc_listener);
+
     let event_loop = EventLoop::new().unwrap();
     let mut app = App {
         state: None,
         game_source: Some(game_source),
         entry_file,
+        game_path: args.game_path,
+        hot_reload_rx,
+        _watcher,
+        osc_rx,
     };
     event_loop.run_app(&mut app).unwrap();
 }

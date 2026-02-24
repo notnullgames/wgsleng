@@ -17,6 +17,7 @@
     "game:rpg": "rm -f rpg.zip && cd examples/rpg && zip ../../rpg.zip *.wgsl map/*.png map/*.wgsl",
     "game:snake": "rm -f snake.zip && cd examples/snake && zip ../../snake.zip *.wgsl",
     "game:tetris": "rm -f tetris.zip && cd examples/tetris && zip ../../tetris.zip *.wgsl *.png",
+    "game:osc": "rm -f osc.zip && cd examples/osc && zip ../../osc.zip *.wgsl",
     "game": "npx -y npm-run-all -p game:*"
   },
   "author": "konsumer",
