@@ -38,18 +38,18 @@ The engine maps keyboard keys to a SNES-style controller:
 
 These all work local, and on the web:
 
-- [bob](https://notnullgames.github.io/wgsl-engine/): Demo with sprites and audio
-- [bunny](https://notnullgames.github.io/wgsl-engine/#examples/bunny/main.wgsl): Demo that loads a 3D model
-- [cubespin](https://notnullgames.github.io/wgsl-engine/#examples/cubespin/main.wgsl): Simple spinning 3d cube
-- [input](https://notnullgames.github.io/wgsl-engine/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
-- [logo](https://notnullgames.github.io/wgsl-engine/#examples/logo/main.wgsl): Shows how to draw things without images
-- [raymarch](https://notnullgames.github.io/wgsl-engine/#examples/raymarch/main.wgsl): Provides some nice 3D drawing functions with ray marching and SDF primitives
-- [snake](https://notnullgames.github.io/wgsl-engine/#examples/snake/main.wgsl): Classic snake game
-- [tetris](https://notnullgames.github.io/wgsl-engine/#examples/tetris/main.wgsl): Classic tetris game. This also includes text-rendering. It's a bit obtuse, but works.
+- [bob](https://notnullgames.github.io/wgsleng/): Demo with sprites and audio
+- [bunny](https://notnullgames.github.io/wgsleng/#examples/bunny/main.wgsl): Demo that loads a 3D model
+- [cubespin](https://notnullgames.github.io/wgsleng/#examples/cubespin/main.wgsl): Simple spinning 3d cube
+- [input](https://notnullgames.github.io/wgsleng/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
+- [logo](https://notnullgames.github.io/wgsleng/#examples/logo/main.wgsl): Shows how to draw things without images
+- [raymarch](https://notnullgames.github.io/wgsleng/#examples/raymarch/main.wgsl): Provides some nice 3D drawing functions with ray marching and SDF primitives
+- [snake](https://notnullgames.github.io/wgsleng/#examples/snake/main.wgsl): Classic snake game
+- [tetris](https://notnullgames.github.io/wgsleng/#examples/tetris/main.wgsl): Classic tetris game. This also includes text-rendering. It's a bit obtuse, but works.
 
 ### Native
 
-You can find the CLI for your platform at [releases](https://github.com/notnullgames/wgsl-engine/releases).
+You can find the CLI for your platform at [releases](https://github.com/notnullgames/wgsleng/releases).
 
 Or if you want to build it yourself (requires rust):
 
