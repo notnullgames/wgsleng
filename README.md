@@ -189,7 +189,16 @@ To start listening on port 9000:
 ./native/target/release/wgsleng examples/video --osc-port 9000
 ```
 
-TODO
+Here's the OSC messages you can send:
+
+```
+/u/whatever                      - set a float uniform
+/spectrum f f f...               - set spectrum data all at once
+/spectrum/N value                - set a single element in spectrum data
+/vid/<filename>/position 0.0-1.0 - set position of a loaded video
+/shader filename.wgsl            - load a differnt shader
+/reload                          - force relaod of current shader
+```
 
 ## asset credits
 
