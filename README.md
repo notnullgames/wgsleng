@@ -41,6 +41,7 @@ The engine maps keyboard keys to a SNES-style controller:
 These all work local, and on the web:
 
 - [bob](https://notnullgames.github.io/wgsleng/): Demo with sprites and audio
+- [hello](https://notnullgames.github.io/wgsleng/#examples/hello/main.wgsl): Simple text example.
 - [bunny](https://notnullgames.github.io/wgsleng/#examples/bunny/main.wgsl): Demo that loads a 3D model
 - [cubespin](https://notnullgames.github.io/wgsleng/#examples/cubespin/main.wgsl): Simple spinning 3d cube
 - [input](https://notnullgames.github.io/wgsleng/#examples/input/main.wgsl): Provides some nice 2D drawing functions, and shows you the current state of the virtual controller
