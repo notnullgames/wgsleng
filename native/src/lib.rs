@@ -10,8 +10,6 @@ pub use obj_loader::ObjModel;
 
 /// Number of named OSC float slots accessible via @osc("name") or @engine.osc[N]
 pub const OSC_FLOAT_COUNT: usize = 64;
-/// Number of spectrum/FFT bins accessible via @engine.spectrum[N] or /spectrum OSC messages
-pub const SPECTRUM_SIZE: usize = 128;
 
 pub const BTN_UP: usize = 0;
 pub const BTN_DOWN: usize = 1;
@@ -314,7 +312,6 @@ impl PreprocessorState {
                 header.push_str(&format!("    audio: array<u32, {}>, // audio trigger counters\n", metadata.sounds.len()));
             }
             header.push_str(&format!("    osc: array<f32, {}>, // OSC float uniforms: /u/name or /u/N\n", OSC_FLOAT_COUNT));
-            header.push_str(&format!("    spectrum: array<f32, {}>, // audio spectrum: /spectrum f f f...\n", SPECTRUM_SIZE));
             header.push_str("}\n\n");
 
             // Add button constants
@@ -388,7 +385,6 @@ impl PreprocessorState {
         source = source.replace("@engine.sampler", "_engine_sampler");
         source = source.replace("@engine.state", "_engine.state");
         source = source.replace("@engine.osc", "_engine.osc");
-        source = source.replace("@engine.spectrum", "_engine.spectrum");
 
         // Replace @osc("name") with indexed slot access
         for (i, name) in metadata.osc_params.iter().enumerate() {

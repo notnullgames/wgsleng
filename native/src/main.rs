@@ -13,16 +13,12 @@ use clap::Parser;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rosc::{OscPacket, OscType};
 use std::collections::HashMap;
-use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT, SPECTRUM_SIZE,
+use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT,
     BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_START, BTN_SELECT};
 
 enum OscMessage {
     /// /u/name value  or  /u/N value
     SetFloat(String, f32),
-    /// /spectrum f f f...  (up to SPECTRUM_SIZE values)
-    SetSpectrum(Vec<f32>),
-    /// /spectrum/N value
-    SetSpectrumBin(usize, f32),
     /// /vid/<filename>/position 0.0-1.0
     SetVideoPosition(String, f32),
     /// /shader filename.wgsl
@@ -314,7 +310,6 @@ struct BufferOffsets {
     state: u64,
     audio: u64,
     osc_floats: u64,
-    spectrum: u64,
 }
 
 impl State {
@@ -577,8 +572,7 @@ impl State {
         let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
         let audio_size = metadata.sounds.len() * 4;
         let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
-        let spectrum_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
-        let total_size_unaligned = spectrum_offset + SPECTRUM_SIZE * 4;
+        let total_size_unaligned = osc_floats_offset + OSC_FLOAT_COUNT * 4;
         let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
         let buffer_offsets = BufferOffsets {
@@ -587,7 +581,6 @@ impl State {
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
             osc_floats: osc_floats_offset as u64,
-            spectrum: spectrum_offset as u64,
         };
 
 
@@ -1217,19 +1210,6 @@ impl State {
                     None => log::warn!("[osc] /u/{} not declared with @osc(\"{}\") in shader", name, name),
                 }
             }
-            OscMessage::SetSpectrum(vals) => {
-                let count = vals.len().min(SPECTRUM_SIZE);
-                let bytes: Vec<u8> = vals[..count].iter().flat_map(|v| v.to_le_bytes()).collect();
-                self.queue.write_buffer(&self.engine_buffer, self.buffer_offsets.spectrum, &bytes);
-            }
-            OscMessage::SetSpectrumBin(idx, value) => {
-                if *idx < SPECTRUM_SIZE {
-                    let offset = self.buffer_offsets.spectrum + (*idx * 4) as u64;
-                    self.queue.write_buffer(&self.engine_buffer, offset, &value.to_le_bytes());
-                } else {
-                    eprintln!("[osc] /spectrum/{} out of range (max {})", idx, SPECTRUM_SIZE - 1);
-                }
-            }
             OscMessage::SetVideoPosition(filename, position) => {
                 if let Some(idx) = self.video_filenames.iter().position(|f| f == filename) {
                     // Gather what we need (may clone frame data for GIF) before touching queue
@@ -1466,8 +1446,7 @@ impl State {
         let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
         let audio_size = metadata.sounds.len() * 4;
         let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
-        let spectrum_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
-        let total_size_unaligned = spectrum_offset + SPECTRUM_SIZE * 4;
+        let total_size_unaligned = osc_floats_offset + OSC_FLOAT_COUNT * 4;
         let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
         let new_buffer_offsets = BufferOffsets {
@@ -1476,7 +1455,6 @@ impl State {
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
             osc_floats: osc_floats_offset as u64,
-            spectrum: spectrum_offset as u64,
         };
 
         let new_state_size = if metadata.sounds.len() > 0 {
@@ -1933,36 +1911,6 @@ fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage)
         return;
     }
 
-    // /spectrum  (list of floats for all bins)
-    if addr == "/spectrum" {
-        let vals: Vec<f32> = msg.args.iter().filter_map(|a| match a {
-            OscType::Float(v)  => Some(*v),
-            OscType::Int(v)    => Some(*v as f32),
-            OscType::Double(v) => Some(*v as f32),
-            _ => None,
-        }).collect();
-        if !vals.is_empty() {
-            let _ = tx.send(OscMessage::SetSpectrum(vals));
-        }
-        return;
-    }
-
-    // /spectrum/N value
-    if let Some(rest) = addr.strip_prefix("/spectrum/") {
-        if let Ok(idx) = rest.parse::<usize>() {
-            let value = msg.args.first().and_then(|a| match a {
-                OscType::Float(v)  => Some(*v),
-                OscType::Int(v)    => Some(*v as f32),
-                OscType::Double(v) => Some(*v as f32),
-                _ => None,
-            });
-            if let Some(v) = value {
-                let _ = tx.send(OscMessage::SetSpectrumBin(idx, v));
-            }
-        }
-        return;
-    }
-
     // /vid/<filename>/position 0.0-1.0
     if let Some(rest) = addr.strip_prefix("/vid/") {
         if let Some(filename) = rest.strip_suffix("/position") {
@@ -2000,7 +1948,7 @@ fn dispatch_osc(tx: &std::sync::mpsc::Sender<OscMessage>, msg: rosc::OscMessage)
     }
     WARNED.with(|w| {
         if w.borrow_mut().insert(addr.to_string()) {
-            log::warn!("[osc] unknown path '{}' — expected /u/<name>, /spectrum, /shader, or /reload", addr);
+            log::warn!("[osc] unknown path '{}' — expected /u/<name>, /shader, or /reload", addr);
             log::warn!("[osc] (set RUST_LOG=debug to see all received messages)");
         }
     });

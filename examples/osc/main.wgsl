@@ -6,14 +6,9 @@
 //   /u/bass       ~80 Hz band energy   (0-1)
 //   /u/mid        ~500 Hz band energy  (0-1)
 //   /u/high       ~3 kHz band energy   (0-1)
+//   /u/presence   ~10 kHz band energy  (0-1)
 //   /u/hue        base color hue       (0-1, manual slider)
 //   /u/speed      animation speed      (0-2, manual slider)
-//
-// Spectrum bins — sent from Pure Data via /spectrum/<N>:
-//   /spectrum/0   bass bar
-//   /spectrum/1   mid bar
-//   /spectrum/2   high bar
-//   /spectrum/3   presence bar (~10 kHz)
 //
 // Run with:  wgsleng examples/osc --osc-port 9000
 //            (add --hot-reload to live-edit this file too)
@@ -62,6 +57,7 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     let bass      = clamp(@osc("bass"),      0.0, 1.0);
     let mid       = clamp(@osc("mid"),       0.0, 1.0);
     let high      = clamp(@osc("high"),      0.0, 1.0);
+    let presence  = clamp(@osc("presence"),  0.0, 1.0);
     let hue       = @osc("hue");
     let speed     = @osc("speed");
 
@@ -112,8 +108,9 @@ fn fs_render(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     color = mix(color, vec3f(0.9), divider * 0.6);
 
     if (uv.y >= bar_top) {
-        let bin     = min(u32(uv.x * 4.0), 3u);
-        let bin_val = clamp(@engine.spectrum[bin], 0.0, 1.0);
+        let bin      = min(u32(uv.x * 4.0), 3u);
+        let spectrum = array<f32, 4>(bass, mid, high, presence);
+        let bin_val  = spectrum[bin];
 
         // bar_y: 0 = top of bar section, 1 = bottom of screen
         let bar_y  = (uv.y - bar_top) / (1.0 - bar_top);

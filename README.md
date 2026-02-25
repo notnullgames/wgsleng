@@ -12,11 +12,13 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 
 ## Quick Start
 
-### Web
+You can run the web-server locally:
 
 ```bash
 npm start
 ```
+
+The native runtime can do a lot more (OSC, etc) and you can install it from [releases](https://github.com/notnullgames/wgsleng/releases).
 
 ## Controls
 
@@ -193,11 +195,9 @@ Here's the OSC messages you can send:
 
 ```
 /u/whatever f                    - set a float uniform
-/spectrum f f f...               - set spectrum data all at once
-/spectrum/N f                    - set a single element in spectrum data
 /vid/<filename>/position 0.0-1.0 - set position of a loaded video
 /shader filename.wgsl            - load a differnt shader
-/reload                          - force relaod of current shader
+/reload                          - force reload of current shader
 ```
 
 ## asset credits
