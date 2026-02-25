@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Chromakey + OSC - Video Control</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        background: #111;
+        font-family: monospace;
+        color: #fff;
+      }
+      #container {
+        display: flex;
+        gap: 20px;
+        align-items: flex-start;
+      }
+      canvas {
+        border: 2px solid #333;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        max-height: 80vh;
+      }
+      #controls {
+        background: #222;
+        padding: 20px;
+        border-radius: 8px;
+        min-width: 250px;
+      }
+      #controls h2 {
+        margin-top: 0;
+        color: #888;
+      }
+      .slider-group {
+        margin-bottom: 15px;
+      }
+      .slider-group label {
+        display: block;
+        margin-bottom: 5px;
+        color: #aaa;
+      }
+      .slider-group input {
+        width: 100%;
+      }
+      .slider-group .value {
+        float: right;
+        color: #0af;
+      }
+      #error {
+        color: #f66;
+        margin-top: 20px;
+        white-space: pre-wrap;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "fflate": "https://esm.sh/fflate/esm/browser.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="container">
+      <canvas id="canvas"></canvas>
+      <div id="controls">
+        <h2>OSC Controls</h2>
+        <div class="slider-group">
+          <label>bass <span class="value" id="bass-val">0.00</span></label>
+          <input type="range" id="bass" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="slider-group">
+          <label>mid <span class="value" id="mid-val">0.00</span></label>
+          <input type="range" id="mid" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="slider-group">
+          <label>high <span class="value" id="high-val">0.00</span></label>
+          <input type="range" id="high" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="slider-group">
+          <label>beat <span class="value" id="beat-val">0.00</span></label>
+          <input type="range" id="beat" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="slider-group">
+          <label>hue <span class="value" id="hue-val">0.00</span></label>
+          <input type="range" id="hue" min="0" max="1" step="0.01" value="0">
+        </div>
+        <div class="slider-group">
+          <label>note <span class="value" id="note-val">0.00</span></label>
+          <input type="range" id="note" min="0" max="1" step="0.01" value="0">
+        </div>
+        <hr>
+        <h2>Video Controls</h2>
+        <div class="slider-group">
+          <label>seek</label>
+          <input type="range" id="seek" min="0" max="100" step="0.1" value="0">
+        </div>
+        <div class="slider-group">
+          <button id="play-btn">Play</button>
+          <button id="pause-btn">Pause</button>
+          <button id="stop-btn">Stop</button>
+        </div>
+      </div>
+    </div>
+    <div id="error"></div>
+
+    <script type="module">
+      import { createGame } from "./wgsleng.js";
+
+      const canvas = document.getElementById("canvas");
+      const errorEl = document.getElementById("error");
+
+      // Error handler
+      function handleError(msg) {
+        errorEl.textContent = msg;
+      }
+
+      // Load the game
+      const game = await createGame("examples/video/main.wgsl", canvas, handleError);
+      window.engine = game.engine;
+
+      // OSC sliders
+      const oscSliders = ['bass', 'mid', 'high', 'beat', 'hue', 'note'];
+
+      oscSliders.forEach(name => {
+        const slider = document.getElementById(name);
+        const valEl = document.getElementById(name + '-val');
+
+        slider.addEventListener('input', () => {
+          const value = parseFloat(slider.value);
+          game.engine.setOsc('/u/' + name, value);
+          valEl.textContent = value.toFixed(2);
+        });
+      });
+
+      // Video controls
+      const seekSlider = document.getElementById('seek');
+      const playBtn = document.getElementById('play-btn');
+      const pauseBtn = document.getElementById('pause-btn');
+      const stopBtn = document.getElementById('stop-btn');
+
+      // Update seek slider position
+      setInterval(() => {
+        const info = game.engine.getVideo('britney.mp4');
+        if (info && info.duration > 0) {
+          seekSlider.max = info.duration;
+          seekSlider.value = info.currentTime;
+        }
+      }, 100);
+
+      playBtn.addEventListener('click', () => {
+        game.engine.setVideo('britney.mp4', 'play');
+      });
+
+      pauseBtn.addEventListener('click', () => {
+        game.engine.setVideo('britney.mp4', 'pause');
+      });
+
+      stopBtn.addEventListener('click', () => {
+        game.engine.setVideo('britney.mp4', 'stop');
+      });
+
+      seekSlider.addEventListener('input', () => {
+        game.engine.setVideo('britney.mp4', 'seek', parseFloat(seekSlider.value));
+      });
+    </script>
+  </body>
+</html>

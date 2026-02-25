@@ -289,6 +289,7 @@ class WGSLGameEngine {
       textures: [],
       videos: [],
       cameras: [],
+      oscParams: [],
     };
 
     // Extract @set_title
@@ -345,6 +346,14 @@ class WGSLGameEngine {
       }
     }
     metadata.cameras.sort((a, b) => a - b);
+
+    // Find all @osc() references
+    const oscMatches = source.matchAll(/@osc\("([^"]+)"\)/g);
+    for (const match of oscMatches) {
+      if (!metadata.oscParams.includes(match[1])) {
+        metadata.oscParams.push(match[1]);
+      }
+    }
 
     // Find all @model() references
     const modelMatches = source.matchAll(/@model\("([^"]+)"\)/g);
@@ -452,6 +461,7 @@ class WGSLGameEngine {
       if (metadata.sounds.length > 0) {
         header += `    audio: array<u32, ${metadata.sounds.length}>, // audio trigger counters\n`;
       }
+      header += `    osc: array<f32, 64>, // OSC float uniforms: /u/name or /u/N\n`;
       header += `}\n\n`;
 
       // Add button constants
@@ -579,6 +589,13 @@ class WGSLGameEngine {
     metadata.cameras.forEach((camIdx, i) => {
       const regex = new RegExp(`@camera\\(${camIdx}\\)`, "g");
       source = source.replace(regex, `_camera_${i}`);
+    });
+
+    // Replace @osc()
+    metadata.oscParams.forEach((oscName, i) => {
+      const escaped = oscName.replace(/\./g, "\\.");
+      const regex = new RegExp(`@osc\\("${escaped}"\\)`, "g");
+      source = source.replace(regex, `_engine.osc[${i}]`);
     });
 
     // Replace @model() references
@@ -759,6 +776,8 @@ class WGSLGameEngine {
     // Store video/camera metadata
     this.videoFiles = metadata.videos || [];
     this.cameraIndices = metadata.cameras || [];
+    this.oscParams = metadata.oscParams || [];
+    this.oscValues = new Float32Array(64); // 64 OSC float slots
 
     // Load textures
     await this.loadTextures();
@@ -1230,10 +1249,11 @@ class WGSLGameEngine {
       Math.ceil(this.stateSize / stateAlignment) * stateAlignment;
 
     const audioSize = this.audioCount * 4;
+    const oscSize = 64 * 4; // 256 bytes for osc array (64 f32s)
 
     // Total size must be multiple of 16 for storage buffer
     const totalSizeUnaligned =
-      buttonSize + floatDataSize + alignedStateSize + audioSize;
+      buttonSize + floatDataSize + alignedStateSize + audioSize + oscSize;
     const totalSize = Math.ceil(totalSizeUnaligned / 16) * 16;
 
     // Create storage buffer for engine state (writable from compute shader)
@@ -1256,6 +1276,7 @@ class WGSLGameEngine {
       floats: buttonSize, // 48
       state: buttonSize + floatDataSize, // 64 (8-byte aligned)
       audio: buttonSize + floatDataSize + alignedStateSize,
+      osc: buttonSize + floatDataSize + alignedStateSize + audioSize,
     };
 
     // Initialize game state to zero
@@ -1451,7 +1472,7 @@ class WGSLGameEngine {
     this.updateDynamicTextures();
 
     // Write input state to buffer
-    const inputData = new ArrayBuffer(48 + 16); // buttons + floats
+    const inputData = new ArrayBuffer(48 + 16 + 256); // buttons + floats + osc
     const inputView = new DataView(inputData);
 
     // Write buttons
@@ -1464,6 +1485,12 @@ class WGSLGameEngine {
     inputView.setFloat32(52, this.deltaTime, true);
     inputView.setFloat32(56, this.canvas.width, true);
     inputView.setFloat32(60, this.canvas.height, true);
+
+    // Write OSC values (at offset 64 = buttonSize + floatDataSize)
+    const oscOffset = 64;
+    for (let i = 0; i < 64; i++) {
+      inputView.setFloat32(oscOffset + i * 4, this.oscValues[i], true);
+    }
 
     this.device.queue.writeBuffer(this.engineBuffer, 0, inputData);
 
@@ -1555,6 +1582,113 @@ class WGSLGameEngine {
     renderPass.end();
 
     this.device.queue.submit([commandEncoder.finish()]);
+  }
+
+  /**
+   * Set an OSC value (same as native /u/<name> message)
+   * @param {string} path - OSC path like "/u/bass" or "/u/0"
+   * @param {number} value - Float value
+   */
+  setOsc(path, value) {
+    if (!path.startsWith("/u/")) return;
+
+    const name = path.slice(3);
+    const idx = this.oscParams.indexOf(name);
+    if (idx >= 0) {
+      this.oscValues[idx] = value;
+    } else {
+      // Try numeric index
+      const numIdx = parseInt(name);
+      if (!isNaN(numIdx) && numIdx >= 0 && numIdx < 64) {
+        this.oscValues[numIdx] = value;
+      }
+    }
+  }
+
+  /**
+   * Get an OSC value
+   * @param {string} path - OSC path like "/u/bass" or index
+   * @returns {number} The OSC value
+   */
+  getOsc(path) {
+    if (path.startsWith("/u/")) {
+      const name = path.slice(3);
+      const idx = this.oscParams.indexOf(name);
+      if (idx >= 0) return this.oscValues[idx];
+      const numIdx = parseInt(name);
+      if (!isNaN(numIdx) && numIdx >= 0 && numIdx < 64) return this.oscValues[numIdx];
+    }
+    return 0;
+  }
+
+  /**
+   * Control video playback (same as native /vid/<name>/* messages)
+   * @param {string} name - Video name (e.g., "britney.mp4")
+   * @param {string} action - Action: "play", "pause", "stop", "seek", "position"
+   * @param {number} value - For seek/position: time in seconds or x,y position
+   */
+  setVideo(name, action, value) {
+    const idx = this.videoFiles.indexOf(name);
+    if (idx < 0) return;
+
+    const videoObj = this.videoElements?.[idx];
+    const videoEl = videoObj?.element;
+    if (!videoEl) return;
+
+    switch (action) {
+      case "play":
+        videoEl.play();
+        break;
+      case "pause":
+        videoEl.pause();
+        break;
+      case "stop":
+        videoEl.pause();
+        videoEl.currentTime = 0;
+        break;
+      case "seek":
+        if (typeof value === "number") {
+          videoEl.currentTime = value;
+        }
+        break;
+    }
+  }
+
+  /**
+   * Get video info
+   * @param {string} name - Video name
+   * @returns {Object} Video state (currentTime, duration, paused)
+   */
+  getVideo(name) {
+    const idx = this.videoFiles.indexOf(name);
+    if (idx < 0) return null;
+
+    const videoObj = this.videoElements?.[idx];
+    const videoEl = videoObj?.element;
+    if (!videoEl) return null;
+
+    return {
+      currentTime: videoEl.currentTime,
+      duration: videoEl.duration || 0,
+      paused: videoEl.paused,
+    };
+  }
+
+  /**
+   * Reload the current shader (same as native /reload message)
+   */
+  async reload() {
+    if (this.currentPath) {
+      await this.loadGame(this.currentPath);
+    }
+  }
+
+  /**
+   * Load a different shader (same as native /shader message)
+   * @param {string} path - Path to new shader
+   */
+  async setShader(path) {
+    await this.loadGame(path);
   }
 
   stop() {

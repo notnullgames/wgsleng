@@ -40,6 +40,7 @@ These all work local, and on the web:
 - [snake](https://notnullgames.github.io/wgsleng/#examples/snake/main.wgsl): Classic snake game
 - [tetris](https://notnullgames.github.io/wgsleng/#examples/tetris/main.wgsl): Classic tetris game. This also includes text-rendering. It's a bit obtuse, but works.
 - [rpg](https://notnullgames.github.io/wgsleng/#examples/rpg/main.wgsl): Example that loads tiled map. Work in progress.
+- [video](https://notnullgames.github.io/wgsleng/video.html): Shows loading a video and controlling it (and uniforms)
 
 ### Native
 
