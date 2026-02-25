@@ -192,9 +192,9 @@ To start listening on port 9000:
 Here's the OSC messages you can send:
 
 ```
-/u/whatever                      - set a float uniform
+/u/whatever f                    - set a float uniform
 /spectrum f f f...               - set spectrum data all at once
-/spectrum/N value                - set a single element in spectrum data
+/spectrum/N f                    - set a single element in spectrum data
 /vid/<filename>/position 0.0-1.0 - set position of a loaded video
 /shader filename.wgsl            - load a differnt shader
 /reload                          - force relaod of current shader
