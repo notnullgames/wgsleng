@@ -48,6 +48,7 @@ These all work local, and on the web:
 - [raymarch](https://notnullgames.github.io/wgsleng/#examples/raymarch/main.wgsl): Provides some nice 3D drawing functions with ray marching and SDF primitives
 - [snake](https://notnullgames.github.io/wgsleng/#examples/snake/main.wgsl): Classic snake game
 - [tetris](https://notnullgames.github.io/wgsleng/#examples/tetris/main.wgsl): Classic tetris game. This also includes text-rendering. It's a bit obtuse, but works.
+- [rpg](https://notnullgames.github.io/wgsleng/#examples/rpg/main.wgsl): Example that loads tiled map. Work in progress.
 
 ### Native
 
