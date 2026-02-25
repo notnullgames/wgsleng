@@ -10,16 +10,6 @@ A minimal game engine that runs games written entirely in WGSL (WebGPU Shading L
 - **Simple input**: Keyboard mapped to SNES controller (see Controls below)
 - **Asset support**: Include images and audio in zip format
 
-## Quick Start
-
-You can run the web-server locally:
-
-```bash
-npm start
-```
-
-The native runtime can do a lot more (OSC, etc) and you can install it from [releases](https://github.com/notnullgames/wgsleng/releases).
-
 ## Controls
 
 The engine maps keyboard keys to a SNES-style controller:
