@@ -11,6 +11,211 @@ pub use obj_loader::ObjModel;
 /// Number of named OSC float slots accessible via @osc("name") or @engine.osc[N]
 pub const OSC_FLOAT_COUNT: usize = 64;
 
+/// Size of the raw key state array — one slot per winit KeyCode variant (in enum order)
+pub const KEY_ARRAY_SIZE: usize = 194;
+
+/// Map a winit KeyCode variant name (= web e.code string) to its canonical index.
+/// Both hosts use this same ordering so shader KEY_* constants are identical.
+pub fn keycode_index(code: &str) -> Option<usize> {
+    Some(match code {
+        "Backquote" => 0,
+        "Backslash" => 1,
+        "BracketLeft" => 2,
+        "BracketRight" => 3,
+        "Comma" => 4,
+        "Digit0" => 5,
+        "Digit1" => 6,
+        "Digit2" => 7,
+        "Digit3" => 8,
+        "Digit4" => 9,
+        "Digit5" => 10,
+        "Digit6" => 11,
+        "Digit7" => 12,
+        "Digit8" => 13,
+        "Digit9" => 14,
+        "Equal" => 15,
+        "IntlBackslash" => 16,
+        "IntlRo" => 17,
+        "IntlYen" => 18,
+        "KeyA" => 19,
+        "KeyB" => 20,
+        "KeyC" => 21,
+        "KeyD" => 22,
+        "KeyE" => 23,
+        "KeyF" => 24,
+        "KeyG" => 25,
+        "KeyH" => 26,
+        "KeyI" => 27,
+        "KeyJ" => 28,
+        "KeyK" => 29,
+        "KeyL" => 30,
+        "KeyM" => 31,
+        "KeyN" => 32,
+        "KeyO" => 33,
+        "KeyP" => 34,
+        "KeyQ" => 35,
+        "KeyR" => 36,
+        "KeyS" => 37,
+        "KeyT" => 38,
+        "KeyU" => 39,
+        "KeyV" => 40,
+        "KeyW" => 41,
+        "KeyX" => 42,
+        "KeyY" => 43,
+        "KeyZ" => 44,
+        "Minus" => 45,
+        "Period" => 46,
+        "Quote" => 47,
+        "Semicolon" => 48,
+        "Slash" => 49,
+        "AltLeft" => 50,
+        "AltRight" => 51,
+        "Backspace" => 52,
+        "CapsLock" => 53,
+        "ContextMenu" => 54,
+        "ControlLeft" => 55,
+        "ControlRight" => 56,
+        "Enter" => 57,
+        "SuperLeft" => 58,
+        "SuperRight" => 59,
+        "ShiftLeft" => 60,
+        "ShiftRight" => 61,
+        "Space" => 62,
+        "Tab" => 63,
+        "Convert" => 64,
+        "KanaMode" => 65,
+        "Lang1" => 66,
+        "Lang2" => 67,
+        "Lang3" => 68,
+        "Lang4" => 69,
+        "Lang5" => 70,
+        "NonConvert" => 71,
+        "Delete" => 72,
+        "End" => 73,
+        "Help" => 74,
+        "Home" => 75,
+        "Insert" => 76,
+        "PageDown" => 77,
+        "PageUp" => 78,
+        "ArrowDown" => 79,
+        "ArrowLeft" => 80,
+        "ArrowRight" => 81,
+        "ArrowUp" => 82,
+        "NumLock" => 83,
+        "Numpad0" => 84,
+        "Numpad1" => 85,
+        "Numpad2" => 86,
+        "Numpad3" => 87,
+        "Numpad4" => 88,
+        "Numpad5" => 89,
+        "Numpad6" => 90,
+        "Numpad7" => 91,
+        "Numpad8" => 92,
+        "Numpad9" => 93,
+        "NumpadAdd" => 94,
+        "NumpadBackspace" => 95,
+        "NumpadClear" => 96,
+        "NumpadClearEntry" => 97,
+        "NumpadComma" => 98,
+        "NumpadDecimal" => 99,
+        "NumpadDivide" => 100,
+        "NumpadEnter" => 101,
+        "NumpadEqual" => 102,
+        "NumpadHash" => 103,
+        "NumpadMemoryAdd" => 104,
+        "NumpadMemoryClear" => 105,
+        "NumpadMemoryRecall" => 106,
+        "NumpadMemoryStore" => 107,
+        "NumpadMemorySubtract" => 108,
+        "NumpadMultiply" => 109,
+        "NumpadParenLeft" => 110,
+        "NumpadParenRight" => 111,
+        "NumpadStar" => 112,
+        "NumpadSubtract" => 113,
+        "Escape" => 114,
+        "Fn" => 115,
+        "FnLock" => 116,
+        "PrintScreen" => 117,
+        "ScrollLock" => 118,
+        "Pause" => 119,
+        "BrowserBack" => 120,
+        "BrowserFavorites" => 121,
+        "BrowserForward" => 122,
+        "BrowserHome" => 123,
+        "BrowserRefresh" => 124,
+        "BrowserSearch" => 125,
+        "BrowserStop" => 126,
+        "Eject" => 127,
+        "LaunchApp1" => 128,
+        "LaunchApp2" => 129,
+        "LaunchMail" => 130,
+        "MediaPlayPause" => 131,
+        "MediaSelect" => 132,
+        "MediaStop" => 133,
+        "MediaTrackNext" => 134,
+        "MediaTrackPrevious" => 135,
+        "Power" => 136,
+        "Sleep" => 137,
+        "AudioVolumeDown" => 138,
+        "AudioVolumeMute" => 139,
+        "AudioVolumeUp" => 140,
+        "WakeUp" => 141,
+        "Meta" => 142,
+        "Hyper" => 143,
+        "Turbo" => 144,
+        "Abort" => 145,
+        "Resume" => 146,
+        "Suspend" => 147,
+        "Again" => 148,
+        "Copy" => 149,
+        "Cut" => 150,
+        "Find" => 151,
+        "Open" => 152,
+        "Paste" => 153,
+        "Props" => 154,
+        "Select" => 155,
+        "Undo" => 156,
+        "Hiragana" => 157,
+        "Katakana" => 158,
+        "F1" => 159,
+        "F2" => 160,
+        "F3" => 161,
+        "F4" => 162,
+        "F5" => 163,
+        "F6" => 164,
+        "F7" => 165,
+        "F8" => 166,
+        "F9" => 167,
+        "F10" => 168,
+        "F11" => 169,
+        "F12" => 170,
+        "F13" => 171,
+        "F14" => 172,
+        "F15" => 173,
+        "F16" => 174,
+        "F17" => 175,
+        "F18" => 176,
+        "F19" => 177,
+        "F20" => 178,
+        "F21" => 179,
+        "F22" => 180,
+        "F23" => 181,
+        "F24" => 182,
+        "F25" => 183,
+        "F26" => 184,
+        "F27" => 185,
+        "F28" => 186,
+        "F29" => 187,
+        "F30" => 188,
+        "F31" => 189,
+        "F32" => 190,
+        "F33" => 191,
+        "F34" => 192,
+        "F35" => 193,
+        _ => return None,
+    })
+}
+
 pub const BTN_UP: usize = 0;
 pub const BTN_DOWN: usize = 1;
 pub const BTN_LEFT: usize = 2;
@@ -305,6 +510,7 @@ impl PreprocessorState {
             header.push_str("    delta_time: f32, // time since last frame\n");
             header.push_str("    screen_width: f32, // current screensize\n");
             header.push_str("    screen_height: f32, // current screensize\n");
+            header.push_str("    mouse: vec4f, // mouse state (iMouse): xy=pos, z=click_x (neg if not pressed), w=click_y\n");
             if game_state_struct.is_some() {
                 header.push_str("    state: GameState, // user's game state that persists across frames\n");
             }
@@ -312,6 +518,7 @@ impl PreprocessorState {
                 header.push_str(&format!("    audio: array<u32, {}>, // audio trigger counters\n", metadata.sounds.len()));
             }
             header.push_str(&format!("    osc: array<f32, {}>, // OSC float uniforms: /u/name or /u/N\n", OSC_FLOAT_COUNT));
+            header.push_str(&format!("    keys: array<u32, {}>, // raw key state: 1=down, 0=up, indexed by KEY_* constants\n", KEY_ARRAY_SIZE));
             header.push_str("}\n\n");
 
             // Add button constants
@@ -328,6 +535,97 @@ impl PreprocessorState {
             header.push_str("const BTN_R: u32 = 9u;\n");
             header.push_str("const BTN_START: u32 = 10u;\n");
             header.push_str("const BTN_SELECT: u32 = 11u;\n\n");
+
+            // Key constants — indices match winit KeyCode enum order / web e.code strings
+            header.push_str("// Key constants for @engine.keys[] — same on native and web\n");
+            header.push_str("const KEY_BACKQUOTE: u32 = 0u;\n");
+            header.push_str("const KEY_BACKSLASH: u32 = 1u;\n");
+            header.push_str("const KEY_BRACKET_LEFT: u32 = 2u;\n");
+            header.push_str("const KEY_BRACKET_RIGHT: u32 = 3u;\n");
+            header.push_str("const KEY_COMMA: u32 = 4u;\n");
+            header.push_str("const KEY_0: u32 = 5u;\n");
+            header.push_str("const KEY_1: u32 = 6u;\n");
+            header.push_str("const KEY_2: u32 = 7u;\n");
+            header.push_str("const KEY_3: u32 = 8u;\n");
+            header.push_str("const KEY_4: u32 = 9u;\n");
+            header.push_str("const KEY_5: u32 = 10u;\n");
+            header.push_str("const KEY_6: u32 = 11u;\n");
+            header.push_str("const KEY_7: u32 = 12u;\n");
+            header.push_str("const KEY_8: u32 = 13u;\n");
+            header.push_str("const KEY_9: u32 = 14u;\n");
+            header.push_str("const KEY_EQUAL: u32 = 15u;\n");
+            header.push_str("const KEY_INTL_BACKSLASH: u32 = 16u;\n");
+            header.push_str("const KEY_INTL_RO: u32 = 17u;\n");
+            header.push_str("const KEY_INTL_YEN: u32 = 18u;\n");
+            header.push_str("const KEY_A: u32 = 19u;\n");
+            header.push_str("const KEY_B: u32 = 20u;\n");
+            header.push_str("const KEY_C: u32 = 21u;\n");
+            header.push_str("const KEY_D: u32 = 22u;\n");
+            header.push_str("const KEY_E: u32 = 23u;\n");
+            header.push_str("const KEY_F: u32 = 24u;\n");
+            header.push_str("const KEY_G: u32 = 25u;\n");
+            header.push_str("const KEY_H: u32 = 26u;\n");
+            header.push_str("const KEY_I: u32 = 27u;\n");
+            header.push_str("const KEY_J: u32 = 28u;\n");
+            header.push_str("const KEY_K: u32 = 29u;\n");
+            header.push_str("const KEY_L: u32 = 30u;\n");
+            header.push_str("const KEY_M: u32 = 31u;\n");
+            header.push_str("const KEY_N: u32 = 32u;\n");
+            header.push_str("const KEY_O: u32 = 33u;\n");
+            header.push_str("const KEY_P: u32 = 34u;\n");
+            header.push_str("const KEY_Q: u32 = 35u;\n");
+            header.push_str("const KEY_R: u32 = 36u;\n");
+            header.push_str("const KEY_S: u32 = 37u;\n");
+            header.push_str("const KEY_T: u32 = 38u;\n");
+            header.push_str("const KEY_U: u32 = 39u;\n");
+            header.push_str("const KEY_V: u32 = 40u;\n");
+            header.push_str("const KEY_W: u32 = 41u;\n");
+            header.push_str("const KEY_X: u32 = 42u;\n");
+            header.push_str("const KEY_Y: u32 = 43u;\n");
+            header.push_str("const KEY_Z: u32 = 44u;\n");
+            header.push_str("const KEY_MINUS: u32 = 45u;\n");
+            header.push_str("const KEY_PERIOD: u32 = 46u;\n");
+            header.push_str("const KEY_QUOTE: u32 = 47u;\n");
+            header.push_str("const KEY_SEMICOLON: u32 = 48u;\n");
+            header.push_str("const KEY_SLASH: u32 = 49u;\n");
+            header.push_str("const KEY_ALT_LEFT: u32 = 50u;\n");
+            header.push_str("const KEY_ALT_RIGHT: u32 = 51u;\n");
+            header.push_str("const KEY_BACKSPACE: u32 = 52u;\n");
+            header.push_str("const KEY_CAPS_LOCK: u32 = 53u;\n");
+            header.push_str("const KEY_CONTEXT_MENU: u32 = 54u;\n");
+            header.push_str("const KEY_CTRL_LEFT: u32 = 55u;\n");
+            header.push_str("const KEY_CTRL_RIGHT: u32 = 56u;\n");
+            header.push_str("const KEY_ENTER: u32 = 57u;\n");
+            header.push_str("const KEY_SUPER_LEFT: u32 = 58u;\n");
+            header.push_str("const KEY_SUPER_RIGHT: u32 = 59u;\n");
+            header.push_str("const KEY_SHIFT_LEFT: u32 = 60u;\n");
+            header.push_str("const KEY_SHIFT_RIGHT: u32 = 61u;\n");
+            header.push_str("const KEY_SPACE: u32 = 62u;\n");
+            header.push_str("const KEY_TAB: u32 = 63u;\n");
+            header.push_str("const KEY_DELETE: u32 = 72u;\n");
+            header.push_str("const KEY_END: u32 = 73u;\n");
+            header.push_str("const KEY_HOME: u32 = 75u;\n");
+            header.push_str("const KEY_INSERT: u32 = 76u;\n");
+            header.push_str("const KEY_PAGE_DOWN: u32 = 77u;\n");
+            header.push_str("const KEY_PAGE_UP: u32 = 78u;\n");
+            header.push_str("const KEY_DOWN: u32 = 79u;\n");
+            header.push_str("const KEY_LEFT: u32 = 80u;\n");
+            header.push_str("const KEY_RIGHT: u32 = 81u;\n");
+            header.push_str("const KEY_UP: u32 = 82u;\n");
+            header.push_str("const KEY_ESCAPE: u32 = 114u;\n");
+            header.push_str("const KEY_F1: u32 = 159u;\n");
+            header.push_str("const KEY_F2: u32 = 160u;\n");
+            header.push_str("const KEY_F3: u32 = 161u;\n");
+            header.push_str("const KEY_F4: u32 = 162u;\n");
+            header.push_str("const KEY_F5: u32 = 163u;\n");
+            header.push_str("const KEY_F6: u32 = 164u;\n");
+            header.push_str("const KEY_F7: u32 = 165u;\n");
+            header.push_str("const KEY_F8: u32 = 166u;\n");
+            header.push_str("const KEY_F9: u32 = 167u;\n");
+            header.push_str("const KEY_F10: u32 = 168u;\n");
+            header.push_str("const KEY_F11: u32 = 169u;\n");
+            header.push_str("const KEY_F12: u32 = 170u;\n");
+            header.push_str("\n");
 
             // Add bindings
             header.push_str("// Bindings: group 0 = textures, group 1 = engine state\n\n");
@@ -382,6 +680,8 @@ impl PreprocessorState {
         source = source.replace("@engine.delta_time", "_engine.delta_time");
         source = source.replace("@engine.screen_width", "_engine.screen_width");
         source = source.replace("@engine.screen_height", "_engine.screen_height");
+        source = source.replace("@engine.mouse", "_engine.mouse");
+        source = source.replace("@engine.keys", "_engine.keys");
         source = source.replace("@engine.sampler", "_engine_sampler");
         source = source.replace("@engine.state", "_engine.state");
         source = source.replace("@engine.osc", "_engine.osc");

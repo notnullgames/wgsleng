@@ -13,7 +13,7 @@ use clap::Parser;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use rosc::{OscPacket, OscType};
 use std::collections::HashMap;
-use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT,
+use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT, KEY_ARRAY_SIZE, keycode_index,
     BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_X, BTN_Y, BTN_L, BTN_R, BTN_START, BTN_SELECT};
 
 enum OscMessage {
@@ -282,6 +282,8 @@ struct State {
     staging_buffer: wgpu::Buffer,
     buffer_offsets: BufferOffsets,
     buttons: [i32; 12],
+    mouse: [f32; 4], // [pos_x, pos_y, click_x (neg=not pressed), click_y]
+    keys: [u32; KEY_ARRAY_SIZE], // raw key state indexed by DOM keycode
     last_time: std::time::Instant,
     time: f32,
     model_vertex_count: usize,
@@ -310,6 +312,209 @@ struct BufferOffsets {
     state: u64,
     audio: u64,
     osc_floats: u64,
+    keys: u64,
+}
+
+/// Map a winit physical KeyCode to its canonical index (shared with web via e.code).
+fn winit_key_index(key: &KeyCode) -> Option<usize> {
+    let code = match key {
+        KeyCode::Backquote => "Backquote",
+        KeyCode::Backslash => "Backslash",
+        KeyCode::BracketLeft => "BracketLeft",
+        KeyCode::BracketRight => "BracketRight",
+        KeyCode::Comma => "Comma",
+        KeyCode::Digit0 => "Digit0",
+        KeyCode::Digit1 => "Digit1",
+        KeyCode::Digit2 => "Digit2",
+        KeyCode::Digit3 => "Digit3",
+        KeyCode::Digit4 => "Digit4",
+        KeyCode::Digit5 => "Digit5",
+        KeyCode::Digit6 => "Digit6",
+        KeyCode::Digit7 => "Digit7",
+        KeyCode::Digit8 => "Digit8",
+        KeyCode::Digit9 => "Digit9",
+        KeyCode::Equal => "Equal",
+        KeyCode::IntlBackslash => "IntlBackslash",
+        KeyCode::IntlRo => "IntlRo",
+        KeyCode::IntlYen => "IntlYen",
+        KeyCode::KeyA => "KeyA",
+        KeyCode::KeyB => "KeyB",
+        KeyCode::KeyC => "KeyC",
+        KeyCode::KeyD => "KeyD",
+        KeyCode::KeyE => "KeyE",
+        KeyCode::KeyF => "KeyF",
+        KeyCode::KeyG => "KeyG",
+        KeyCode::KeyH => "KeyH",
+        KeyCode::KeyI => "KeyI",
+        KeyCode::KeyJ => "KeyJ",
+        KeyCode::KeyK => "KeyK",
+        KeyCode::KeyL => "KeyL",
+        KeyCode::KeyM => "KeyM",
+        KeyCode::KeyN => "KeyN",
+        KeyCode::KeyO => "KeyO",
+        KeyCode::KeyP => "KeyP",
+        KeyCode::KeyQ => "KeyQ",
+        KeyCode::KeyR => "KeyR",
+        KeyCode::KeyS => "KeyS",
+        KeyCode::KeyT => "KeyT",
+        KeyCode::KeyU => "KeyU",
+        KeyCode::KeyV => "KeyV",
+        KeyCode::KeyW => "KeyW",
+        KeyCode::KeyX => "KeyX",
+        KeyCode::KeyY => "KeyY",
+        KeyCode::KeyZ => "KeyZ",
+        KeyCode::Minus => "Minus",
+        KeyCode::Period => "Period",
+        KeyCode::Quote => "Quote",
+        KeyCode::Semicolon => "Semicolon",
+        KeyCode::Slash => "Slash",
+        KeyCode::AltLeft => "AltLeft",
+        KeyCode::AltRight => "AltRight",
+        KeyCode::Backspace => "Backspace",
+        KeyCode::CapsLock => "CapsLock",
+        KeyCode::ContextMenu => "ContextMenu",
+        KeyCode::ControlLeft => "ControlLeft",
+        KeyCode::ControlRight => "ControlRight",
+        KeyCode::Enter => "Enter",
+        KeyCode::SuperLeft => "SuperLeft",
+        KeyCode::SuperRight => "SuperRight",
+        KeyCode::ShiftLeft => "ShiftLeft",
+        KeyCode::ShiftRight => "ShiftRight",
+        KeyCode::Space => "Space",
+        KeyCode::Tab => "Tab",
+        KeyCode::Convert => "Convert",
+        KeyCode::KanaMode => "KanaMode",
+        KeyCode::Lang1 => "Lang1",
+        KeyCode::Lang2 => "Lang2",
+        KeyCode::Lang3 => "Lang3",
+        KeyCode::Lang4 => "Lang4",
+        KeyCode::Lang5 => "Lang5",
+        KeyCode::NonConvert => "NonConvert",
+        KeyCode::Delete => "Delete",
+        KeyCode::End => "End",
+        KeyCode::Help => "Help",
+        KeyCode::Home => "Home",
+        KeyCode::Insert => "Insert",
+        KeyCode::PageDown => "PageDown",
+        KeyCode::PageUp => "PageUp",
+        KeyCode::ArrowDown => "ArrowDown",
+        KeyCode::ArrowLeft => "ArrowLeft",
+        KeyCode::ArrowRight => "ArrowRight",
+        KeyCode::ArrowUp => "ArrowUp",
+        KeyCode::NumLock => "NumLock",
+        KeyCode::Numpad0 => "Numpad0",
+        KeyCode::Numpad1 => "Numpad1",
+        KeyCode::Numpad2 => "Numpad2",
+        KeyCode::Numpad3 => "Numpad3",
+        KeyCode::Numpad4 => "Numpad4",
+        KeyCode::Numpad5 => "Numpad5",
+        KeyCode::Numpad6 => "Numpad6",
+        KeyCode::Numpad7 => "Numpad7",
+        KeyCode::Numpad8 => "Numpad8",
+        KeyCode::Numpad9 => "Numpad9",
+        KeyCode::NumpadAdd => "NumpadAdd",
+        KeyCode::NumpadBackspace => "NumpadBackspace",
+        KeyCode::NumpadClear => "NumpadClear",
+        KeyCode::NumpadClearEntry => "NumpadClearEntry",
+        KeyCode::NumpadComma => "NumpadComma",
+        KeyCode::NumpadDecimal => "NumpadDecimal",
+        KeyCode::NumpadDivide => "NumpadDivide",
+        KeyCode::NumpadEnter => "NumpadEnter",
+        KeyCode::NumpadEqual => "NumpadEqual",
+        KeyCode::NumpadHash => "NumpadHash",
+        KeyCode::NumpadMemoryAdd => "NumpadMemoryAdd",
+        KeyCode::NumpadMemoryClear => "NumpadMemoryClear",
+        KeyCode::NumpadMemoryRecall => "NumpadMemoryRecall",
+        KeyCode::NumpadMemoryStore => "NumpadMemoryStore",
+        KeyCode::NumpadMemorySubtract => "NumpadMemorySubtract",
+        KeyCode::NumpadMultiply => "NumpadMultiply",
+        KeyCode::NumpadParenLeft => "NumpadParenLeft",
+        KeyCode::NumpadParenRight => "NumpadParenRight",
+        KeyCode::NumpadStar => "NumpadStar",
+        KeyCode::NumpadSubtract => "NumpadSubtract",
+        KeyCode::Escape => "Escape",
+        KeyCode::Fn => "Fn",
+        KeyCode::FnLock => "FnLock",
+        KeyCode::PrintScreen => "PrintScreen",
+        KeyCode::ScrollLock => "ScrollLock",
+        KeyCode::Pause => "Pause",
+        KeyCode::BrowserBack => "BrowserBack",
+        KeyCode::BrowserFavorites => "BrowserFavorites",
+        KeyCode::BrowserForward => "BrowserForward",
+        KeyCode::BrowserHome => "BrowserHome",
+        KeyCode::BrowserRefresh => "BrowserRefresh",
+        KeyCode::BrowserSearch => "BrowserSearch",
+        KeyCode::BrowserStop => "BrowserStop",
+        KeyCode::Eject => "Eject",
+        KeyCode::LaunchApp1 => "LaunchApp1",
+        KeyCode::LaunchApp2 => "LaunchApp2",
+        KeyCode::LaunchMail => "LaunchMail",
+        KeyCode::MediaPlayPause => "MediaPlayPause",
+        KeyCode::MediaSelect => "MediaSelect",
+        KeyCode::MediaStop => "MediaStop",
+        KeyCode::MediaTrackNext => "MediaTrackNext",
+        KeyCode::MediaTrackPrevious => "MediaTrackPrevious",
+        KeyCode::Power => "Power",
+        KeyCode::Sleep => "Sleep",
+        KeyCode::AudioVolumeDown => "AudioVolumeDown",
+        KeyCode::AudioVolumeMute => "AudioVolumeMute",
+        KeyCode::AudioVolumeUp => "AudioVolumeUp",
+        KeyCode::WakeUp => "WakeUp",
+        KeyCode::Meta => "Meta",
+        KeyCode::Hyper => "Hyper",
+        KeyCode::Turbo => "Turbo",
+        KeyCode::Abort => "Abort",
+        KeyCode::Resume => "Resume",
+        KeyCode::Suspend => "Suspend",
+        KeyCode::Again => "Again",
+        KeyCode::Copy => "Copy",
+        KeyCode::Cut => "Cut",
+        KeyCode::Find => "Find",
+        KeyCode::Open => "Open",
+        KeyCode::Paste => "Paste",
+        KeyCode::Props => "Props",
+        KeyCode::Select => "Select",
+        KeyCode::Undo => "Undo",
+        KeyCode::Hiragana => "Hiragana",
+        KeyCode::Katakana => "Katakana",
+        KeyCode::F1 => "F1",
+        KeyCode::F2 => "F2",
+        KeyCode::F3 => "F3",
+        KeyCode::F4 => "F4",
+        KeyCode::F5 => "F5",
+        KeyCode::F6 => "F6",
+        KeyCode::F7 => "F7",
+        KeyCode::F8 => "F8",
+        KeyCode::F9 => "F9",
+        KeyCode::F10 => "F10",
+        KeyCode::F11 => "F11",
+        KeyCode::F12 => "F12",
+        KeyCode::F13 => "F13",
+        KeyCode::F14 => "F14",
+        KeyCode::F15 => "F15",
+        KeyCode::F16 => "F16",
+        KeyCode::F17 => "F17",
+        KeyCode::F18 => "F18",
+        KeyCode::F19 => "F19",
+        KeyCode::F20 => "F20",
+        KeyCode::F21 => "F21",
+        KeyCode::F22 => "F22",
+        KeyCode::F23 => "F23",
+        KeyCode::F24 => "F24",
+        KeyCode::F25 => "F25",
+        KeyCode::F26 => "F26",
+        KeyCode::F27 => "F27",
+        KeyCode::F28 => "F28",
+        KeyCode::F29 => "F29",
+        KeyCode::F30 => "F30",
+        KeyCode::F31 => "F31",
+        KeyCode::F32 => "F32",
+        KeyCode::F33 => "F33",
+        KeyCode::F34 => "F34",
+        KeyCode::F35 => "F35",
+        _ => return None,
+    };
+    keycode_index(code)
 }
 
 impl State {
@@ -566,13 +771,13 @@ impl State {
 
         // Calculate buffer layout matching WGSL struct
         let button_size = 12 * 4; // 48 bytes
-        let float_data_size = 4 * 4; // 16 bytes
-        // State alignment depends on the largest member - vec2f has 8-byte alignment
-        let state_alignment = 8;
-        let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
+        let float_data_size = 8 * 4; // 32 bytes (time, delta, width, height + mouse vec4f)
+        // metadata.state_size is already aligned to the struct's own alignment by the preprocessor
+        let aligned_state_size = metadata.state_size;
         let audio_size = metadata.sounds.len() * 4;
         let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
-        let total_size_unaligned = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let keys_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let total_size_unaligned = keys_offset + KEY_ARRAY_SIZE * 4;
         let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
         let buffer_offsets = BufferOffsets {
@@ -581,6 +786,7 @@ impl State {
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
             osc_floats: osc_floats_offset as u64,
+            keys: keys_offset as u64,
         };
 
 
@@ -934,6 +1140,8 @@ impl State {
             staging_buffer,
             buffer_offsets,
             buttons: [0; 12],
+            mouse: [0.0f32; 4],
+            keys: [0u32; KEY_ARRAY_SIZE],
             last_time: std::time::Instant::now(),
             time: 0.0,
             model_vertex_count: model_vertex_counts.get(0).copied().unwrap_or(0),
@@ -976,6 +1184,7 @@ impl State {
                 let pressed = *state == ElementState::Pressed;
                 let value = if pressed { 1 } else { 0 };
 
+                // Map to virtual gamepad buttons
                 match key {
                     KeyCode::ArrowUp => self.buttons[BTN_UP] = value,
                     KeyCode::ArrowDown => self.buttons[BTN_DOWN] = value,
@@ -989,8 +1198,37 @@ impl State {
                     KeyCode::KeyW => self.buttons[BTN_R] = value,
                     KeyCode::Enter => self.buttons[BTN_START] = value,
                     KeyCode::ShiftLeft | KeyCode::ShiftRight => self.buttons[BTN_SELECT] = value,
-                    _ => return false,
+                    _ => {}
                 }
+
+                // Track raw key state
+                if let Some(kc) = winit_key_index(key) {
+                    self.keys[kc] = value as u32;
+                }
+
+                true
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse[0] = position.x as f32;
+                self.mouse[1] = position.y as f32;
+                true
+            }
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                state: ElementState::Pressed,
+                ..
+            } => {
+                self.mouse[2] = self.mouse[0];
+                self.mouse[3] = self.mouse[1];
+                true
+            }
+            WindowEvent::MouseInput {
+                button: MouseButton::Left,
+                state: ElementState::Released,
+                ..
+            } => {
+                self.mouse[2] = -self.mouse[2].abs();
+                self.mouse[3] = -self.mouse[3].abs();
                 true
             }
             _ => false,
@@ -1072,13 +1310,23 @@ impl State {
             input_data.extend_from_slice(&button.to_le_bytes());
         }
 
-        // Time data (16 bytes)
+        // Time + mouse data (32 bytes: time, delta, width, height, mouse xyzw)
         input_data.extend_from_slice(&self.time.to_le_bytes());
         input_data.extend_from_slice(&dt.to_le_bytes());
         input_data.extend_from_slice(&(self.size.width as f32).to_le_bytes());
         input_data.extend_from_slice(&(self.size.height as f32).to_le_bytes());
+        input_data.extend_from_slice(&self.mouse[0].to_le_bytes());
+        input_data.extend_from_slice(&self.mouse[1].to_le_bytes());
+        input_data.extend_from_slice(&self.mouse[2].to_le_bytes());
+        input_data.extend_from_slice(&self.mouse[3].to_le_bytes());
 
         self.queue.write_buffer(&self.engine_buffer, 0, &input_data);
+
+        // Write raw key state at its offset (after osc)
+        let keys_data: Vec<u8> = self.keys.iter()
+            .flat_map(|&k| k.to_le_bytes())
+            .collect();
+        self.queue.write_buffer(&self.engine_buffer, self.buffer_offsets.keys, &keys_data);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -1441,12 +1689,13 @@ impl State {
 
         // Compute buffer layout (same logic as State::new)
         let button_size = 12 * 4usize;
-        let float_data_size = 4 * 4usize;
-        let state_alignment = 8usize;
-        let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
+        let float_data_size = 8 * 4usize; // 32 bytes (time, delta, width, height + mouse vec4f)
+        // metadata.state_size is already aligned to the struct's own alignment by the preprocessor
+        let aligned_state_size = metadata.state_size;
         let audio_size = metadata.sounds.len() * 4;
         let osc_floats_offset = button_size + float_data_size + aligned_state_size + audio_size;
-        let total_size_unaligned = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let keys_offset = osc_floats_offset + OSC_FLOAT_COUNT * 4;
+        let total_size_unaligned = keys_offset + KEY_ARRAY_SIZE * 4;
         let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
         let new_buffer_offsets = BufferOffsets {
@@ -1455,6 +1704,7 @@ impl State {
             state: (button_size + float_data_size) as u64,
             audio: (button_size + float_data_size + aligned_state_size) as u64,
             osc_floats: osc_floats_offset as u64,
+            keys: keys_offset as u64,
         };
 
         let new_state_size = if metadata.sounds.len() > 0 {

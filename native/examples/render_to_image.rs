@@ -1,7 +1,7 @@
 // Simple tool to render a WGSL shader to a PNG image for testing
 use std::fs::File;
 use wgpu::util::DeviceExt;
-use wgsleng::{GameSource, PreprocessorState};
+use wgsleng::{GameSource, PreprocessorState, OSC_FLOAT_COUNT, KEY_ARRAY_SIZE};
 
 #[tokio::main]
 async fn main() {
@@ -213,14 +213,16 @@ async fn main() {
 
     let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Calculate buffer layout matching WGSL struct
+    // Calculate buffer layout matching WGSL struct (must match main.rs State::new)
     let button_size = 12 * 4; // 48 bytes
-    let float_data_size = 4 * 4; // 16 bytes
-    let state_alignment = 8;
-    let aligned_state_size = ((metadata.state_size + state_alignment - 1) / state_alignment) * state_alignment;
+    let float_data_size = 8 * 4; // 32 bytes: time, delta, w, h, mouse(vec4f)
+    // metadata.state_size is already aligned to the struct's own alignment by the preprocessor
+    let aligned_state_size = metadata.state_size;
     let audio_size = metadata.sounds.len() * 4;
+    let osc_size = wgsleng::OSC_FLOAT_COUNT * 4;
+    let keys_size = wgsleng::KEY_ARRAY_SIZE * 4;
 
-    let total_size_unaligned = button_size + float_data_size + aligned_state_size + audio_size;
+    let total_size_unaligned = button_size + float_data_size + aligned_state_size + audio_size + osc_size + keys_size;
     let total_size = ((total_size_unaligned + 15) / 16) * 16;
 
     // Create engine buffer
@@ -231,12 +233,6 @@ async fn main() {
     let height_bytes = (height as f32).to_le_bytes();
     init_data[56..60].copy_from_slice(&width_bytes);
     init_data[60..64].copy_from_slice(&height_bytes);
-
-    // Initialize player position to center in state section (offset 64)
-    let center_x = ((width / 2) as f32).to_le_bytes();
-    let center_y = ((height / 2) as f32).to_le_bytes();
-    init_data[64..68].copy_from_slice(&center_x);
-    init_data[68..72].copy_from_slice(&center_y);
 
     let engine_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("Engine Buffer"),
